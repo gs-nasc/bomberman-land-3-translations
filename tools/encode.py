@@ -1,13 +1,16 @@
 """Re-insert translated text: TSV -> string tables + rebuilt fonts/textures -> .DIG -> ISO.
 
-Input TSV: dialogos_jp.tsv (textscan.py) plus a `pt` column; an empty `pt` keeps the original.
-Text syntax in `pt`: plain characters, `\\n`, the tags of textscan.CONTROL ({PAG}, {COR:vermelho}...),
-{XXXX} for a raw control code and {?n} for a raw glyph index.
+Input TSV: dialogos_jp.tsv (textscan.py) plus one column per language (`pt`, `es`, `en`...);
+--lang picks the column (default `pt`) and an empty cell keeps the original.
+Text syntax: plain characters, `\\n`, the tags of textscan.CONTROL ({PAG}, {COR:vermelho}...),
+{XXXX} for a raw control code and {?n} for a raw glyph index. Any character below U+8100
+(Latin, Greek, Cyrillic...) or with a 2-byte Shift-JIS code can be used.
 
 Per font touched by a translation:
   * every table bound to that font (TSV `font_res`) is re-encoded; untranslated strings keep their
     original codes byte for byte;
-  * characters already in the font reuse their glyph; others get new glyphs drawn with --ttf,
+  * characters already in the font reuse their glyph; others get new glyphs drawn with the first
+    --ttf of the chain that has them (default: Noto Sans Bold, then Noto Sans CJK Black),
     placed in slots no bound table uses any more (never 0-12: the code prints digits from there),
     then appended; --no-reuse only appends;
   * the texture is rebuilt with full pages; growing past the original page count is reported
@@ -16,7 +19,7 @@ Each modified entry is re-laid out (16-byte aligned subfiles, keeping larger ori
 recompressed and appended to its .DIG; each modified .DIG is appended to the ISO and its directory
 record repointed (the game opens the .DIG files by name, see SLPM_626.43 @ 0x12a7e0).
 
-Usage: encode.py DIG_OUT ISO_ROOT GAME.iso TRANSLATED.tsv OUT_DIR [--ttf FONT] [--no-reuse]
+Usage: encode.py DIG_OUT ISO_ROOT GAME.iso TRANSLATED.tsv OUT_DIR [--lang pt] [--ttf FONT ...] [--no-reuse]
 """
 import argparse
 import os
@@ -35,7 +38,10 @@ ARCS = ['CDDATA', 'CDDATA0', 'CDDATA1', 'CDDATA2', 'CDDATA4', 'CDDATA5']
 PROTECTED = 13          # glyphs 0..12 ('　＋ー０..９') are addressed directly by game code
 TAG_TO_CODE = {v: k for k, v in CONTROL.items()}
 TOKEN = re.compile(r'\\n|\{[^}]*\}|.', re.S)
-DEFAULT_TTF = '/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc'
+# Noto Sans covers Latin (incl. Polish, Czech, Turkish, Romanian...), Greek and Cyrillic; Noto Sans
+# CJK catches any new Japanese character a translator may add.
+DEFAULT_TTFS = ['/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf',
+                '/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc']
 
 
 class EncodeError(Exception):
@@ -62,14 +68,15 @@ def tokenize(text):
 
 
 def glyph_code(ch):
-    """2-byte code stored in the glyph record. The renderer only uses the index, so new Latin-1
-    characters are stored as 0x00XX (no SJIS code starts with 0x00) to keep the font readable."""
-    if ord(ch) < 0x100:
-        return bytes([0, ord(ch)])
+    """2-byte code stored in the glyph record. The renderer only uses the index, so new characters
+    below U+8100 are stored as their big-endian code point (no SJIS code starts below 0x81) to
+    keep the font readable; anything else must have a 2-byte Shift-JIS code."""
+    if ord(ch) < 0x8100:
+        return struct.pack('>H', ord(ch))
     try:
         b = ch.encode('shift_jis')
     except UnicodeEncodeError:
-        raise EncodeError(f'character {ch!r} is neither Latin-1 nor Shift-JIS')
+        raise EncodeError(f'character {ch!r} is above U+8100 and not in Shift-JIS')
     if len(b) != 2:
         raise EncodeError(f'character {ch!r} has no 2-byte Shift-JIS code')
     return b
@@ -77,7 +84,7 @@ def glyph_code(ch):
 
 # ---------------------------------------------------------------- font rebuild
 
-def rebuild_font(glyph_bytes, tex_bytes, tables, ttf, reuse, log):
+def rebuild_font(glyph_bytes, tex_bytes, tables, ttfs, reuse, log):
     """tables: list of (strings_codes_or_None_per_string, tokens_per_string) for every bound table.
     Returns new glyph-table bytes, new texture bytes and {table_index: [codes per string]}."""
     glyphs = parse_glyphs(glyph_bytes)
@@ -119,7 +126,10 @@ def rebuild_font(glyph_bytes, tex_bytes, tables, ttf, reuse, log):
 
     tex = read_texture(tex_bytes)
     old_pages = len(tex['pages'])
-    renderer = GlyphRenderer(ttf, cell, tex, count)
+    renderer = GlyphRenderer(ttfs, cell, tex, count)
+    missing = renderer.missing(new_chars)
+    if missing:
+        raise EncodeError(f'no --ttf has a glyph for {"".join(missing)!r}')
     clear = renderer.style['clear'] if renderer.style else renderer.ramp[0]
     per = (tex_w // cell) ** 2
     n_pages = -(-new_count // per)
@@ -277,7 +287,9 @@ def main(argv=None):
     ap.add_argument('iso')
     ap.add_argument('tsv')
     ap.add_argument('out_dir')
-    ap.add_argument('--ttf', default=DEFAULT_TTF)
+    ap.add_argument('--lang', default='pt', help='TSV column holding the translation (default: pt)')
+    ap.add_argument('--ttf', action='append',
+                    help='font for new glyphs; repeat to build a fallback chain (default: Noto Sans Bold, Noto Sans CJK Black)')
     ap.add_argument('--no-reuse', action='store_true')
     a = ap.parse_args(argv)
     os.makedirs(a.out_dir, exist_ok=True)
@@ -290,20 +302,20 @@ def main(argv=None):
     lines = open(a.tsv, encoding='utf-8').read().splitlines()
     head = lines[0].split('\t')
     col = {k: i for i, k in enumerate(head)}
-    if 'pt' not in col:
-        raise EncodeError("TSV has no 'pt' column")
-    tables = defaultdict(dict)        # string_res -> {id: pt or None}
+    if a.lang not in col:
+        raise EncodeError(f"TSV has no '{a.lang}' column")
+    tables = defaultdict(dict)        # string_res -> {id: translation or None}
     font_of = {}
     for line in lines[1:]:
         f = line.split('\t')
         f += [''] * (len(head) - len(f))
         sid = int(f[col['string_res']], 16)
         font_of[sid] = int(f[col['font_res']], 16)
-        tables[sid][int(f[col['id']])] = f[col['pt']] or None
+        tables[sid][int(f[col['id']])] = f[col[a.lang]] or None
 
     touched_fonts = {font_of[s] for s, ids in tables.items() if any(ids.values())}
     if not touched_fonts:
-        log('nada para traduzir (coluna pt vazia)')
+        log(f'nada para traduzir (coluna {a.lang} vazia)')
         return 0
     replacements = defaultdict(dict)  # (arc, entry) -> {sub_index: bytes}
     skipped = []
@@ -326,12 +338,12 @@ def main(argv=None):
             originals = parse_strings(open(spath, 'rb').read())
             tokens = []
             for i in range(len(originals)):
-                pt = tables[sid].get(i)
-                tokens.append(tokenize(pt) if pt else None)
+                text = tables[sid].get(i)
+                tokens.append(tokenize(text) if text else None)
             work.append((originals, tokens))
         try:
             new_glyphs, new_tex, encoded = rebuild_font(glyph_bytes, open(tex_path, 'rb').read(), work,
-                                                        a.ttf, not a.no_reuse, log)
+                                                        a.ttf or DEFAULT_TTFS, not a.no_reuse, log)
         except EncodeError as ex:
             skipped += bound
             log(f'    PULADA: {ex}')
@@ -363,7 +375,7 @@ def main(argv=None):
         log(f'{arc}.DIG:')
         new_digs[arc] = rebuild_dig(open(os.path.join(a.iso_root, f'{arc}.DIG'), 'rb').read(), entries, log)
         open(os.path.join(a.out_dir, f'{arc}.DIG'), 'wb').write(new_digs[arc])
-    out_iso = os.path.join(a.out_dir, 'Bomberman Land 3 (PT-BR).iso')
+    out_iso = os.path.join(a.out_dir, f'Bomberman Land 3 ({a.lang}).iso')
     log('ISO:')
     patch_iso(a.iso, out_iso, new_digs, log)
     if skipped:

@@ -3,7 +3,8 @@
 Per-scene font ("glyph table"):
   u16 0, u16 1, u16 count, u16 tex_w, u16 tex_h, u16 cell_w, u16 cell_h, u16 0
   count x { u16 index, u8[2] sjis (big-endian), u16 advance_width, u16 0 }
-  (fonts rebuilt by encode.py store new Latin-1 characters as 0x00XX in the sjis field)
+  (fonts rebuilt by encode.py store new characters below U+8100 as their big-endian code point;
+   SJIS codes always start at 0x81 or above, so the two never collide)
 String table:
   u32 count, u32 offset[count] (from table start), then strings of u16 LE codes:
   code < 0x8000 -> glyph index into the paired glyph table
@@ -27,8 +28,8 @@ def parse_glyphs(d):
     for i in range(n):
         idx, = struct.unpack_from('<H', d, 16 + i * 8)
         sj = d[18 + i * 8:20 + i * 8]
-        if sj[0] == 0:
-            table[idx] = chr(sj[1])
+        if sj[0] < 0x81:
+            table[idx] = chr((sj[0] << 8) | sj[1])
             continue
         try:
             table[idx] = sj.decode('shift_jis')

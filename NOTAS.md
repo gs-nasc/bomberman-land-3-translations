@@ -1,4 +1,4 @@
-# Bomberman Land 3 (SLPM-62643) — notas de engenharia reversa
+# Bomberman Land 3 (SLPM-62643) — notas de engenharia reversa (tradução multilíngue)
 
 ## Disco
 - BIN MODE2/2352, 1 trilha. `tools/bin2iso.py` converte para ISO 2048 (offset 24 em cada setor).
@@ -197,3 +197,12 @@ valida as texturas reconstruídas e lista os setores alterados da imagem origina
 - O ISO cresce ~150 MB por .DIG modificado (o .DIG antigo fica como espaço morto): 744 MB no teste, acima de um CD de 700 MB. Ok para emulador.
 - Quebra de linha/página é manual: o encoder não mede se a linha cabe na janela.
 - A fonte do `{NOME}`/`{VAR2}` (2º fluxo de glifos da janela) não é reconstruída.
+
+## Multilíngue
+- TSV com uma coluna por idioma; `encode.py`/`verify.py --lang XX` (padrão `pt`); ISO de saída `Bomberman Land 3 (XX).iso`.
+- Campo sjis do registro de glifo para letras novas: code point big-endian se < U+8100 (latim estendido, grego, cirílico...),
+  senão SJIS de 2 bytes. Nenhum código SJIS começa abaixo de 0x81, então `parse_glyphs` distingue os dois.
+- Cadeia de fontes (`--ttf` repetível; padrão NotoSans-Bold.ttf -> NotoSansCJK-Black.ttc): cada letra usa a 1ª fonte que a tem.
+- **Armadilha:** o layout RAQM do Pillow "inventa" letras ausentes decompondo-as (ż = z + ponto solto, ę/ą/ł viram caixa).
+  O renderer usa `Layout.BASIC` e compara com o .notdef de U+10FFFD. Noto Sans CJK JP não tem pl/cs/sk/tr/ro; Noto Sans Bold tem.
+- Testes: es/pl/ru 1.568 strings cada, 0 diferenças; regressão pt (243 e 2.699) ok.

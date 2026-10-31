@@ -2,11 +2,12 @@
 (ISO directory -> .DIG -> entry -> subfiles).
 
 For every table bound to a font touched by the translation (or every table with --all), each string
-is decoded with the font found in the rebuilt ISO and compared with `pt` (or the original text).
+is decoded with the font found in the rebuilt ISO and compared with the --lang column (default `pt`)
+or, where that cell is empty, the original text.
 Also reports which sectors of the original image changed (only the PVD and the root directory
 should) and checks that each rebuilt font's texture still validates against its glyph table.
 
-Usage: verify.py DIG_OUT ORIGINAL.iso REBUILT.iso TRANSLATED.tsv [--all]
+Usage: verify.py DIG_OUT ORIGINAL.iso REBUILT.iso TRANSLATED.tsv [--lang pt] [--all]
 """
 import argparse
 import os
@@ -58,6 +59,7 @@ def main(argv=None):
     ap.add_argument('original_iso')
     ap.add_argument('rebuilt_iso')
     ap.add_argument('tsv')
+    ap.add_argument('--lang', default='pt', help='TSV column holding the translation (default: pt)')
     ap.add_argument('--all', action='store_true')
     a = ap.parse_args(argv)
 
@@ -70,7 +72,7 @@ def main(argv=None):
     head = lines[0].split('\t')
     col = {k: i for i, k in enumerate(head)}
     rows = [l.split('\t') + [''] * (len(head) - len(l.split('\t'))) for l in lines[1:]]
-    touched = {r[col['font_res']] for r in rows if r[col['pt']]}
+    touched = {r[col['font_res']] for r in rows if r[col[a.lang]]}
     rows = [r for r in rows if a.all or r[col['font_res']] in touched]
     src = IsoDig(new, a.dig_root)
 
@@ -82,7 +84,7 @@ def main(argv=None):
         glyphs = parse_glyphs(src.resource(int(fid, 16)))
         strings = parse_strings(src.resource(int(sid, 16)))
         for r in table:
-            want = r[col['pt']] or r[col['text']]
+            want = r[col[a.lang]] or r[col['text']]
             got = decode(strings[int(r[col['id']])], glyphs)
             if got != want:
                 bad += 1

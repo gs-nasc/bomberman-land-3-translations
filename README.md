@@ -1,6 +1,6 @@
-# Bomberman Land 3 (SLPM-62643) — ferramentas de tradução PT-BR
+# Bomberman Land 3 (SLPM-62643) — ferramentas de tradução
 
-Engenharia reversa e pipeline de tradução do Bomberman Land 3 (PS2, Japão).
+Engenharia reversa e pipeline de tradução multilíngue do Bomberman Land 3 (PS2, Japão).
 O jogo não está incluído: é preciso ter a própria cópia do disco.
 
 Detalhes de formatos, endereços no executável e decisões em [NOTAS.md](NOTAS.md).
@@ -19,9 +19,21 @@ for d in CDDATA CDDATA0 CDDATA1 CDDATA2 CDDATA4 CDDATA5; do python3 tools/dig_ex
 | Passo | Ferramenta |
 |---|---|
 | Extrair o texto para TSV | `tools/textscan.py dig iso/SLPM_626.43 iso/MSG.MGC dialogos_jp.tsv` |
-| Traduzir | preencher a coluna `pt` (tags em `textscan.CONTROL`) |
-| Gerar o ISO traduzido | `tools/encode.py dig iso game.iso traduzido.tsv saida/` |
-| Conferir | `tools/verify.py dig game.iso "saida/Bomberman Land 3 (PT-BR).iso" traduzido.tsv` |
+| Traduzir | uma coluna por idioma no TSV (`pt`, `es`, `en`, `pl`...); tags em `textscan.CONTROL` |
+| Gerar o ISO de um idioma | `tools/encode.py dig iso game.iso traduzido.tsv saida/ --lang es` |
+| Conferir | `tools/verify.py dig game.iso "saida/Bomberman Land 3 (es).iso" traduzido.tsv --lang es` |
+
+`--lang` vale `pt` por padrão. Célula vazia mantém o texto original.
+
+## Idiomas e fontes
+
+Letras novas são desenhadas com uma cadeia de fontes (`--ttf`, repetível): por padrão Noto Sans Bold
+(latim completo, grego, cirílico) e Noto Sans CJK Black (japonês novo). O encoder recusa a fonte do
+jogo se alguma letra não existir em nenhuma TTF da cadeia.
+
+| Testado (`teste/teste_multilang.tsv`, `teste/preview_multilang.png`) | Fora do escopo |
+|---|---|
+| pt, es, pl, ru (fr, de, it, cs, tr, ro, el, vi cobertos pela fonte) | chinês e coreano: milhares de glifos novos por cena |
 
 ## Ferramentas
 

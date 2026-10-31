@@ -259,33 +259,53 @@ class GlyphRenderer:
     Coloured fonts copy the style of the existing glyphs, told apart by brightness: per-row fill
     index (bright, keeps gradients), a 1px opaque outline (dark), a 1px soft edge (dark,
     semi-transparent) and the transparent index; the letter is drawn 1px smaller per side (the soft
-    edge may be clipped by the cell on the tallest glyphs, which keeps the letters readable)."""
+    edge may be clipped by the cell on the tallest glyphs, which keeps the letters readable).
 
-    # Tallest accented capitals plus the deepest descenders must fit in the cell.
-    EXTENT = 'ÁÉÍÓÚÂÊÔÃÕÀÇgjpqy'
+    `font_paths` is a fallback chain: each character is drawn with the first font that has it.
+    Text is laid out with Pillow's BASIC engine so a missing letter is never faked by decomposing
+    it into a base letter plus a combining mark."""
+
+    # Tallest accented capitals (Portuguese, Spanish, French, German, Nordic, Polish...) plus the
+    # deepest descenders must fit in the cell, so every language gets the same letter size.
+    EXTENT = 'ÁÉÍÓÚÂÊÔÃÕÀÇÑÄÖÜÅŁŚŻŽgjpqy'
     OUTLINE = 1  # pixels per side reserved for the outline in coloured fonts
+    UNASSIGNED = '\U0010FFFD'  # no font maps it: renders as .notdef
 
-    def __init__(self, font_path, cell, tex=None, n_existing=0):
+    def __init__(self, font_paths, cell, tex=None, n_existing=0):
         self.cell = cell
-        self.font_path = font_path
+        self.font_paths = [font_paths] if isinstance(font_paths, str) else list(font_paths)
         self.style = None
         self.ramp = list(range(16))
         if tex is not None:
             self._learn(tex, n_existing)
-        self._fit(self.OUTLINE if self.style else 0)
+        self.margin = self.OUTLINE if self.style else 0
+        self.fonts = [self._fit(p) for p in self.font_paths]
 
-    def _fit(self, margin):
+    def _fit(self, path):
+        """(font, baseline y, .notdef shape) sized so EXTENT fits the cell minus the margin."""
         from PIL import ImageFont
         cell = self.cell
         size = cell
         while True:
-            self.font = ImageFont.truetype(self.font_path, size=size, index=0)
-            _, top, _, bottom = self.font.getbbox(self.EXTENT)
-            if bottom - top <= cell - 1 - 2 * margin or size <= 6:
+            font = ImageFont.truetype(path, size=size, index=0, layout_engine=ImageFont.Layout.BASIC)
+            _, top, _, bottom = font.getbbox(self.EXTENT)
+            if bottom - top <= cell - 1 - 2 * self.margin or size <= 6:
                 break
             size -= 1
-        self.margin = margin
-        self.y = (cell - (bottom - top)) // 2 - top
+        y = (cell - (bottom - top)) // 2 - top
+        return font, y, self._shape(font, self.UNASSIGNED)
+
+    def _shape(self, font, ch):
+        from PIL import Image, ImageDraw
+        im = Image.new('L', (self.cell * 2, self.cell * 2))
+        ImageDraw.Draw(im).text((2, 2), ch, fill=255, font=font)
+        return im.tobytes()
+
+    def _font_for(self, ch):
+        for font, y, notdef in self.fonts:
+            if self._shape(font, ch) != notdef:
+                return font, y
+        return None
 
     def _learn(self, tex, n_existing):
         pal = palette(tex)
@@ -330,13 +350,18 @@ class GlyphRenderer:
                       'soft': soft.most_common(1)[0][0] if soft else outline_i,
                       'clear': clear.most_common(1)[0][0]}
 
+    def missing(self, chars):
+        """Characters no font of the chain has (they would render as the .notdef box)."""
+        return [c for c in chars if c.strip() and self._font_for(c) is None]
+
     def render(self, ch):
         from PIL import Image, ImageDraw
         cell, m = self.cell, self.margin
         img = Image.new('L', (cell, cell), 0)
         if ch.strip():
-            left, _, right, _ = self.font.getbbox(ch)
-            ImageDraw.Draw(img).text((1 + m - left, self.y), ch, fill=255, font=self.font)
+            font, y = self._font_for(ch)
+            left, _, right, _ = font.getbbox(ch)
+            ImageDraw.Draw(img).text((1 + m - left, y), ch, fill=255, font=font)
             width = min(cell, right - left + 2 + 2 * m)
         else:
             width = max(3, cell // 3)
