@@ -1,0 +1,12 @@
+fonte 0005008a (CDDATA e0005): 1 tabelas, 3 strings traduzidas
+    glifos: 383 -> 424 (55 novos, 14 livres para reuso)
+fonte 00ad001d (CDDATA e0173): 1 tabelas, 1 strings traduzidas
+    glifos: 182 -> 182 (10 novos, 169 livres para reuso)
+fonte 00ad001f (CDDATA e0173): 1 tabelas, 1 strings traduzidas
+    glifos: 91 -> 91 (18 novos, 78 livres para reuso)
+  AVISO: CDDATA e0005 cresceu 5763072 -> 5797888 bytes (memória da cena)
+CDDATA.DIG:
+  e0005: 5797888 bytes (2831 setores), comprimido 1534 setores
+  e0173: 1579008 bytes (771 setores), comprimido 416 setores
+ISO:
+  CDDATA.DIG -> LBA 290720, 149204992 bytes

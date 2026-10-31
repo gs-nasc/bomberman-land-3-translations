@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+
+# game data and build output never go to the repo
+*.bin
+*.iso
+*.DIG
+saida/
