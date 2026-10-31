@@ -1,0 +1,73 @@
+# Oficina de Tradução em produção: app + Postgres próprio + backup diário.
+# Fica atrás do Caddy da pino (projeto "pino" na mesma VPS): o app entra na rede pino_default com o
+# nome games-app, e o Caddyfile da pino tem o bloco games.gabirel.dev -> games-app:3000.
+# Configuração em .env (modelo: .env.example).
+
+name: games
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: games
+      POSTGRES_DB: games
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+      TZ: America/Sao_Paulo
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U games -d games"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    mem_limit: 384m
+    logging: &logs
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  app:
+    build: .
+    image: games-app:prod
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://games:${POSTGRES_PASSWORD}@db:5432/games
+      PUBLIC_URL: https://${DOMAIN:?defina DOMAIN no .env}
+      PORT: "3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      default: {}
+      pino:
+        aliases: [games-app]
+    mem_limit: 256m
+    logging: *logs
+
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      PGHOST: db
+      PGUSER: games
+      PGDATABASE: games
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      TZ: America/Sao_Paulo
+    volumes:
+      - ./backups:/backups
+    # Um dump por dia às 03h30, guardando 14 dias.
+    entrypoint: ["/bin/sh", "-c", "while true; do if [ \"$$(date +%H%M)\" = 0330 ]; then pg_dump -Fc > /backups/games-$$(date +%F).dump && find /backups -name 'games-*.dump' -mtime +14 -delete; sleep 60; fi; sleep 30; done"]
+    depends_on:
+      db:
+        condition: service_healthy
+    logging: *logs
+
+networks:
+  pino:
+    external: true
+    name: pino_default
+
+volumes:
+  db-data:
