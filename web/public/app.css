@@ -1,4 +1,4 @@
-/* Oficina de Tradução — neutral UI, one accent for progress, dense tables, two-pane editor */
+/* Glifo — neutral UI, one accent for progress, dense tables, two-pane editor */
 :root {
   --bg: #fbfbfa;
   --surface: #ffffff;
@@ -52,14 +52,17 @@ p { margin: 0; }
 .logo { display: flex; align-items: center; gap: 10px; text-decoration: none; font-weight: 600; letter-spacing: -.02em; font-size: 15px; }
 .logo-mark { width: 20px; height: 20px; border-radius: 6px; background: var(--ink); position: relative; }
 .logo-mark::after { content: ""; position: absolute; left: 5px; right: 8px; bottom: 5px; height: 3px; border-radius: 2px; background: var(--accent); }
-.nav { display: flex; gap: 4px; }
-.nav a { text-decoration: none; color: var(--muted); padding: 6px 10px; border-radius: 6px; font-weight: 500; }
+.nav { display: flex; gap: 4px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.nav a { text-decoration: none; color: var(--muted); padding: 6px 10px; border-radius: 6px; font-weight: 500; white-space: nowrap; flex: none; }
 .nav a:hover { color: var(--ink); background: var(--subtle); }
 .nav a[aria-current="page"] { color: var(--ink); }
-.account { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.account { margin-left: auto; display: flex; align-items: center; gap: 10px; flex: none; }
+.account .btn { white-space: nowrap; }
 @media (max-width: 640px) {
-  .top-in { gap: 12px; padding: 0 max(16px, env(safe-area-inset-left)); }
+  .top-in { gap: 10px; padding: 0 max(16px, env(safe-area-inset-left)); }
   .nav a { padding: 6px 6px; }
+  .account { gap: 6px; }
+  .account .lang-switch { max-width: 84px; padding-right: 20px; }
   .account .login-name, .logo-text { display: none; }
   .page { padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); }
   .page-head > div:last-child { min-width: 0 !important; width: 100%; }
@@ -99,7 +102,7 @@ p { margin: 0; }
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); min-width: 0; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
 .panel-body { padding: 18px; display: grid; gap: 14px; }
-.grid { display: grid; gap: 20px; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); align-items: start; }
+.grid { display: grid; gap: 20px; grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); align-items: start; }
 .split { display: grid; gap: 20px; grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr); align-items: start; }
 @media (max-width: 900px) { .split { grid-template-columns: minmax(0, 1fr); } }
 
@@ -233,3 +236,7 @@ textarea { resize: vertical; line-height: 1.55; }
 .hero h1 { font-size: 34px; letter-spacing: -.03em; }
 .hero p { color: var(--ink-2); font-size: 15px; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* interface language switch */
+.lang-switch { width: auto; min-height: 30px; height: 30px; padding: 0 26px 0 10px; font-size: 13px; border-color: var(--line); background-color: transparent; color: var(--muted); }
+.lang-switch:hover { color: var(--ink); border-color: var(--line-2); }

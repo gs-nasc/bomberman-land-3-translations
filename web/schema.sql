@@ -1,4 +1,4 @@
--- Oficina de Tradução: schema (applied on every start; every statement is idempotent).
+-- Glifo: schema (applied on every start; every statement is idempotent).
 
 create table if not exists users (
   id          serial primary key,

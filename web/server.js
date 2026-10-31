@@ -1,4 +1,4 @@
-// Oficina de Tradução: HTTP server (Node 22, no framework). Postgres via `pg`, GitHub login,
+// Glifo: HTTP server (Node 22, no framework). Postgres via `pg`, GitHub login,
 // JSON API under /api, live updates over Server-Sent Events, static frontend from ./public.
 import { createServer } from 'node:http';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -6,6 +6,7 @@ import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
+import { langOf, tr } from './messages.js';
 
 const env = (k, d) => process.env[k] ?? d;
 const PORT = +env('PORT', 3000);
@@ -27,8 +28,8 @@ const one = async (text, params) => (await q(text, params)).rows[0] || null;
 
 // ---------------------------------------------------------------- http helpers
 
-class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
-const fail = (status, message) => { throw new HttpError(status, message); };
+class HttpError extends Error { constructor(status, message, vars = {}) { super(message); this.status = status; this.vars = vars; } }
+const fail = (status, message, vars) => { throw new HttpError(status, message, vars); };
 
 function send(res, status, body, headers = {}) {
   const data = typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body);
@@ -78,7 +79,7 @@ async function upsertUser({ github_id, login, name, avatar_url }) {
 }
 
 async function githubStart(req, res) {
-  if (!GITHUB_ID) return send(res, 503, 'Login com GitHub ainda não configurado (GITHUB_CLIENT_ID).');
+  if (!GITHUB_ID) return send(res, 503, tr(langOf(req), 'Login com GitHub ainda não configurado (GITHUB_CLIENT_ID).'));
   const state = randomBytes(16).toString('base64url');
   const url = new URL('https://github.com/login/oauth/authorize');
   url.search = new URLSearchParams({ client_id: GITHUB_ID, redirect_uri: `${PUBLIC_URL}/auth/github/callback`, scope: 'read:user', state, allow_signup: 'true' });
@@ -89,15 +90,15 @@ async function githubStart(req, res) {
 async function githubCallback(req, res, url) {
   const state = url.searchParams.get('state') || '';
   const expected = cookies(req).oauth_state || '';
-  if (!state || state.length !== expected.length || !timingSafeEqual(Buffer.from(state), Buffer.from(expected))) return send(res, 400, 'Login expirou. Tente de novo.');
+  if (!state || state.length !== expected.length || !timingSafeEqual(Buffer.from(state), Buffer.from(expected))) return send(res, 400, tr(langOf(req), 'Login expirou. Tente de novo.'));
   const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
     method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
     body: JSON.stringify({ client_id: GITHUB_ID, client_secret: GITHUB_SECRET, code: url.searchParams.get('code'), redirect_uri: `${PUBLIC_URL}/auth/github/callback` }),
   });
   const tok = await tokenRes.json();
-  if (!tok.access_token) return send(res, 400, 'O GitHub recusou o login. Tente de novo.');
-  const gh = await (await fetch('https://api.github.com/user', { headers: { Authorization: `Bearer ${tok.access_token}`, 'User-Agent': 'oficina-de-traducao' } })).json();
-  if (!gh.id) return send(res, 502, 'Não foi possível ler a conta do GitHub.');
+  if (!tok.access_token) return send(res, 400, tr(langOf(req), 'O GitHub recusou o login. Tente de novo.'));
+  const gh = await (await fetch('https://api.github.com/user', { headers: { Authorization: `Bearer ${tok.access_token}`, 'User-Agent': 'glifo' } })).json();
+  if (!gh.id) return send(res, 502, tr(langOf(req), 'Não foi possível ler a conta do GitHub.'));
   const user = await upsertUser({ github_id: gh.id, login: gh.login, name: gh.name, avatar_url: gh.avatar_url });
   await startSession(res, user.id);
 }
@@ -177,7 +178,7 @@ function parseTsv(text) {
   const lines = text.split(/\r?\n/).filter((l) => l.length);
   const head = lines[0].split('\t');
   const col = Object.fromEntries(head.map((k, i) => [k, i]));
-  for (const k of BASE_COLS) if (!(k in col)) fail(400, `Arquivo sem a coluna "${k}". Use o TSV gerado pelo textscan.py.`);
+  for (const k of BASE_COLS) if (!(k in col)) fail(400, 'Arquivo sem a coluna "{col}". Use o TSV gerado pelo textscan.py.', { col: k });
   const tables = new Map();
   for (const line of lines.slice(1)) {
     const f = line.split('\t');
@@ -334,7 +335,7 @@ route('PUT', '/api/games/:slug/strings/:id/:lang', async ({ user, req, p }) => {
   const cur = await one('select text, updated_at from translations where string_id = $1 and lang = $2', [s.id, p.lang]);
   if (b.base !== undefined && cur && String(cur.updated_at?.toISOString?.() || '') !== String(b.base || '') && cur.text !== text) {
     const by = await one('select u.login, u.name from translations t join users u on u.id = t.updated_by where t.string_id = $1 and t.lang = $2', [s.id, p.lang]);
-    fail(409, `${by?.name || by?.login || 'Outra pessoa'} alterou esta string enquanto você editava.`);
+    fail(409, '{who} alterou esta string enquanto você editava.', { who: by?.name || by?.login || null });
   }
   let row = null;
   if (!text) await q('delete from translations where string_id = $1 and lang = $2', [s.id, p.lang]);
@@ -492,15 +493,15 @@ route('DELETE', '/api/admin/users/:id/sessions', async ({ user, p }) => {
 // ---------------------------------------------------------------- static files
 
 const TYPES = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff2': 'font/woff2' };
-async function serveStatic(res, pathname) {
+async function serveStatic(req, res, pathname) {
   const file = normalize(join(PUBLIC_DIR, pathname === '/' ? 'index.html' : pathname));
-  if (!file.startsWith(PUBLIC_DIR)) return send(res, 404, 'Não encontrado.');
+  if (!file.startsWith(PUBLIC_DIR)) return send(res, 404, tr(langOf(req), 'Não encontrado.'));
   try {
     const data = await readFile(file);
     res.writeHead(200, { 'Content-Type': TYPES[extname(file)] || 'application/octet-stream', 'Cache-Control': extname(file) === '.html' ? 'no-cache' : 'public, max-age=300' });
     res.end(data);
   } catch {
-    if (extname(pathname)) return send(res, 404, 'Não encontrado.');
+    if (extname(pathname)) return send(res, 404, tr(langOf(req), 'Não encontrado.'));
     // app routes live in the hash, but any other path still gets the page (read first, then answer)
     const page = await readFile(join(PUBLIC_DIR, 'index.html'));
     res.writeHead(200, { 'Content-Type': TYPES['.html'], 'Cache-Control': 'no-cache' });
@@ -520,7 +521,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname === '/auth/logout' && req.method === 'POST') return await logout(req, res);
     if (url.pathname.startsWith('/api/')) {
       // state-changing calls must come from our own page (SameSite cookie + this header)
-      if (req.method !== 'GET' && req.headers['x-requested-with'] !== 'oficina') fail(403, 'Pedido recusado.');
+      if (req.method !== 'GET' && req.headers['x-requested-with'] !== 'glifo') fail(403, 'Pedido recusado.');
       for (const r of routes) {
         if (r.method !== req.method) continue;
         const m = url.pathname.match(r.re);
@@ -532,10 +533,15 @@ const server = createServer(async (req, res) => {
       }
       fail(404, 'Rota não encontrada.');
     }
-    return await serveStatic(res, url.pathname);
+    return await serveStatic(req, res, url.pathname);
   } catch (e) {
     if (!(e instanceof HttpError)) console.error(e);
-    if (!res.headersSent) send(res, e.status || 500, { error: e instanceof HttpError ? e.message : 'Erro no servidor. Tente de novo.' });
+    if (!res.headersSent) {
+      const lang = langOf(req);
+      const vars = { ...(e.vars || {}) };
+      if ('who' in vars && !vars.who) vars.who = tr(lang, 'Outra pessoa');
+      send(res, e.status || 500, { error: tr(lang, e instanceof HttpError ? e.message : 'Erro no servidor. Tente de novo.', vars) });
+    }
   }
 });
 
@@ -547,4 +553,4 @@ async function migrate() {
 }
 
 await migrate();
-server.listen(PORT, '0.0.0.0', () => console.log(`Oficina de Tradução em ${PUBLIC_URL} (porta ${PORT})${DEV_LOGIN ? ' — DEV_LOGIN ligado' : ''}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`Glifo em ${PUBLIC_URL} (porta ${PORT})${DEV_LOGIN ? ' — DEV_LOGIN ligado' : ''}`));

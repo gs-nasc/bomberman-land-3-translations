@@ -1,7 +1,7 @@
 {
-  "name": "oficina-de-traducao",
+  "name": "glifo",
   "private": true,
-  "description": "Plataforma de tradução colaborativa de jogos",
+  "description": "Glifo: tradução colaborativa de jogos",
   "type": "module",
   "engines": { "node": ">=22" },
   "scripts": {

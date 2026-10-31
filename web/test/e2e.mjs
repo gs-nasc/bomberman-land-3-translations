@@ -16,7 +16,7 @@ async function login(name) {
 }
 async function call(cookie, method, path, body, { raw = false, header = true } = {}) {
   const headers = { Cookie: cookie || '' };
-  if (header) headers['X-Requested-With'] = 'oficina';
+  if (header) headers['X-Requested-With'] = 'glifo';
   let payload;
   if (body !== undefined) { payload = raw ? body : JSON.stringify(body); headers['Content-Type'] = raw ? 'text/plain' : 'application/json'; }
   const r = await fetch(`${BASE}${path}`, { method, headers, body: payload });
@@ -108,5 +108,17 @@ assert.equal(got.length, orig.length);
 const set = new Set(got); assert.ok(orig.every((r) => set.has(r))); ok(`export has the ${orig.length} original rows unchanged`);
 const translated = lines.filter((l) => l.split('\t')[10] === 'Olá!\\nTudo bem?{PAG}');
 assert.ok(translated.length >= 1); ok(`translation exported to ${translated.length} row(s), every copy of its table`);
+
+// server messages follow the interface language (X-Lang, then Accept-Language)
+const errIn = async (headers) => (await (await fetch(`${BASE}/api/admin/users`, { headers: { Cookie: bob, ...headers } })).json()).error;
+assert.equal(await errIn({}), 'Só administradores.');
+assert.equal(await errIn({ 'X-Lang': 'en' }), 'Admins only.');
+assert.equal(await errIn({ 'X-Lang': 'ja' }), '管理者のみ。');
+assert.equal(await errIn({ 'Accept-Language': 'es-AR,es;q=0.9' }), 'Solo administradores.');
+ok('errors come back in pt, en, ja and es');
+const fresh = (await call(alice, 'GET', `/api/games/${SLUG}/blocks/${block.id}?lang=pt`)).data.strings[1];
+await call(admin, 'PUT', `/api/games/${SLUG}/strings/${s2.id}/pt`, { text: 'Outra versão' });
+const c2 = await fetch(`${BASE}/api/games/${SLUG}/strings/${s2.id}/pt`, { method: 'PUT', headers: { Cookie: alice, 'X-Requested-With': 'glifo', 'X-Lang': 'en', 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'x', base: fresh.updated_at }) });
+assert.equal((await c2.json()).error, 'admin changed this string while you were editing.'); ok('message templates fill in who changed the string');
 
 console.log(`\n${passed} checks passed`);

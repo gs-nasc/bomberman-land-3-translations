@@ -1,4 +1,4 @@
-# Oficina de Tradução em produção: app + Postgres próprio + backup diário.
+# Glifo em produção: app + Postgres próprio + backup diário.
 # Fica atrás do Caddy da pino (projeto "pino" na mesma VPS): o app entra na rede pino_default com o
 # nome games-app, e o Caddyfile da pino tem o bloco games.gabirel.dev -> games-app:3000.
 # Configuração em .env (modelo: .env.example).

@@ -180,14 +180,16 @@ não têm coluna (aparecem com 0%). O JSON tem só contagens, sem texto do jogo.
 
 ### Site da equipe: [games.gabirel.dev](https://games.gabirel.dev)
 
-A **Oficina de Tradução** (código em `web/`) é onde a equipe traduz pelo navegador:
+O **Glifo** (código em `web/`) é onde a equipe traduz pelo navegador:
 
 - login com GitHub; vários jogos; idiomas com porcentagem de traduzido e revisado;
 - papéis por jogo e por idioma (coordenação, tradutor, revisor), conferidos no servidor;
 - editor por bloco com o original e os códigos destacados, histórico de cada string, revisão e
   atualização ao vivo quando outra pessoa salva;
 - pedido para entrar na equipe e painel de administração;
-- a coordenação importa o `dialogos_jp.tsv` e exporta o TSV com uma coluna por idioma para o `encode.py`.
+- a coordenação importa o `dialogos_jp.tsv` e exporta o TSV com uma coluna por idioma para o `encode.py`;
+- interface em português, inglês, espanhol e japonês (detecta o navegador, troca no topo da página;
+  textos em `web/public/i18n.js` e mensagens do servidor em `web/messages.js`).
 
 O texto original só aparece para quem faz parte da equipe do jogo.
 
