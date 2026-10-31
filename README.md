@@ -178,17 +178,27 @@ Mostra quanto de cada idioma está traduzido, no total e por cena. As tabelas re
 contam uma vez só (são cerca de 8.200 strings únicas). `--langs` inclui idiomas planejados que ainda
 não têm coluna (aparecem com 0%). O JSON tem só contagens, sem texto do jogo.
 
-### Site da equipe
+### Site da equipe: [games.gabirel.dev](https://games.gabirel.dev)
 
-[Tradução Bomberman Land 3](https://claude.ai/artifact/6sPq2Hn2o62UW4gzMDYpAH) (claude.ai; quem for
-entrar precisa receber acesso pelo menu Compartilhar da página):
+A **Oficina de Tradução** (código em `web/`) é onde a equipe traduz pelo navegador:
 
-- progresso por idioma e por cena, atualizado em tempo real;
-- pedido para entrar na equipe, aprovado ou recusado pelos coordenadores;
-- cada membro "pega" uma cena por idioma e marca como traduzindo, em revisão ou pronto;
-- atividade recente e quem está com a página aberta agora.
+- login com GitHub; vários jogos; idiomas com porcentagem de traduzido e revisado;
+- papéis por jogo e por idioma (coordenação, tradutor, revisor), conferidos no servidor;
+- editor por bloco com o original e os códigos destacados, histórico de cada string, revisão e
+  atualização ao vivo quando outra pessoa salva;
+- pedido para entrar na equipe e painel de administração;
+- a coordenação importa o `dialogos_jp.tsv` e exporta o TSV com uma coluna por idioma para o `encode.py`.
 
-Para atualizar as barras, um coordenador envia o `progresso.json` na seção **Coordenação** do site.
+O texto original só aparece para quem faz parte da equipe do jogo.
+
+Rodar localmente (precisa de um Postgres):
+
+```bash
+cd web && npm install && DATABASE_URL=postgres://... DEV_LOGIN=1 ADMIN_GITHUB_LOGINS=dev node server.js
+```
+
+Produção: `web/docker-compose.yml` (app, Postgres e backup diário) em `/opt/games` na VPS da pino, atrás do
+Caddy dela. Atualizar: copiar `web/` para `/opt/games` e rodar `docker compose up -d --build` lá.
 
 ## Trabalhando em equipe
 
