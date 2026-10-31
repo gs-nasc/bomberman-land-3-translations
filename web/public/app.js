@@ -375,13 +375,49 @@ async function tabSettings(body, data) {
 const SPLIT = /(\\n|\{[^}]*\})/;
 const IS_TAG = /^\{[^}]*\}$/;
 const toField = (s) => (s || '').replace(/\\n/g, '\n');
-function sourceNode(text, sourceLang) {
+// Codes the encoder understands (tools/textscan.py CONTROL), plus raw {XXXX} codes and {?n} glyphs.
+const COLORS = ['preto', 'vermelho', 'verde', 'azul', 'amarelo', 'rosa', 'laranja', 'branco'];
+const KNOWN_TAGS = new Set(['{PAG}', '{NOME}', '{VAR}', '{VAR2}', '{FONTE1}', '{FONTE2}', '{X8021}', '{COR}', '{CONTORNO}', '{CONTORNO:off}',
+  '{CONTORNO:2}', '{CONTORNO:3}', '{ONDA}', '{ONDA:off}', '{ESP:1/2}', '{ESP:1/4}', '{ESP:1}',
+  ...['1', '0.8', '1.5', '0.6', '2'].map((v) => `{TAM:${v}}`), ...COLORS.map((c) => `{COR:${c}}`)]);
+const isKnownTag = (tag) => KNOWN_TAGS.has(tag) || /^\{[0-9A-Fa-f]{4}\}$/.test(tag) || /^\{\?\d+\}$/.test(tag);
+const ALIASES = { page: '{PAG}', pag: '{PAG}', name: '{NOME}', nome: '{NOME}', color: '{COR}', colour: '{COR}', cor: '{COR}', outline: '{CONTORNO}', wave: '{ONDA}', onda: '{ONDA}' };
+function suggestTag(tag) {
+  const up = tag.toUpperCase().replace(/:(.*)\}$/, (m, v) => `:${/^(OFF|[A-ZÇÃÁÉ]+)$/.test(v) ? v.toLowerCase() : v}}`);
+  if (isKnownTag(up)) return up;
+  const bare = tag.slice(1, -1).toLowerCase().split(':')[0];
+  return ALIASES[bare] || null;
+}
+function tagInfo(tag) {
+  const [name, v] = tag.slice(1, -1).split(':');
+  if (name === 'TAM') return v === '1' ? t('tag.TAM1') : t('tag.TAM', { v });
+  if (name === 'COR') return v ? t('tag.COR', { v }) : t('tag.CORreset');
+  if (name === 'CONTORNO') return v === 'off' ? t('tag.CONTORNOoff') : t('tag.CONTORNO');
+  if (name === 'ONDA') return v === 'off' ? t('tag.ONDAoff') : t('tag.ONDA');
+  if (name === 'ESP') return t('tag.ESP', { v });
+  if (name === 'FONTE1' || name === 'FONTE2') return t('tag.FONTE');
+  if (['PAG', 'NOME', 'VAR', 'VAR2'].includes(name)) return t(`tag.${name}`);
+  return t('tag.raw');
+}
+// Insert text at the cursor of a textarea and let the row react as if the person had typed it.
+function insertAt(field, text) {
+  field.focus();
+  const start = field.selectionStart ?? field.value.length, end = field.selectionEnd ?? start;
+  field.setRangeText(text, start, end, 'end');
+  field.dispatchEvent(new Event('input', { bubbles: true }));
+}
+function sourceNode(text, sourceLang, field) {
   const box = h('div', { class: 'src', lang: sourceLang });
   for (const part of text.split(SPLIT)) {
     if (!part) continue;
-    if (part === '\\n') box.append(h('span', { class: 'br', text: '↵' }), '\n');
-    else if (IS_TAG.test(part)) box.append(h('span', { class: 'tok', text: part }));
-    else box.append(part);
+    if (part === '\\n') {
+      box.append(field ? h('button', { class: 'br', type: 'button', text: '↵', title: `${t('tag.newline')} · ${t('tag.clickToInsert')}`, 'aria-label': t('tag.newline'), onmousedown: (e) => e.preventDefault(), onclick: () => insertAt(field, '\n') })
+        : h('span', { class: 'br', text: '↵', title: t('tag.newline') }), '\n');
+    } else if (IS_TAG.test(part)) {
+      const info = tagInfo(part);
+      box.append(field ? h('button', { class: 'tok', type: 'button', text: part, title: `${info} · ${t('tag.clickToInsert')}`, 'aria-label': `${part}: ${info}`, onmousedown: (e) => e.preventDefault(), onclick: () => insertAt(field, part) })
+        : h('span', { class: 'tok', text: part, title: info }));
+    } else box.append(part);
   }
   return box;
 }
@@ -390,6 +426,14 @@ function missingTags(src, tr) {
   const out = [];
   for (const tag of want) { const i = have.indexOf(tag); if (i < 0) out.push(tag); else have.splice(i, 1); }
   return out;
+}
+const unknownTags = (tr) => [...new Set((tr.match(/\{[^}]*\}/g) || []).filter((tag) => !isKnownTag(tag)))];
+function codesPanel() {
+  const rows = ['{PAG}', '{NOME}', '{VAR}', '{TAM:2}', '{TAM:1}', '{COR:vermelho}', '{COR}', '{CONTORNO}', '{CONTORNO:off}', '{ONDA}', '{ONDA:off}', '{ESP:1/2}']
+    .map((tag) => h('div', { class: 'code-row' }, h('span', { class: 'tok', text: tag }), h('span', { text: tagInfo(tag) })));
+  return h('div', { class: 'codes-panel' }, h('p', { text: t('ed.codesLead') }),
+    h('div', { class: 'code-row' }, h('span', { class: 'br', text: '↵' }), h('span', { text: t('tag.newline') })), rows,
+    h('p', { class: 'muted small', text: t('ed.codesPairs') }));
 }
 
 async function viewEditor(route) {
@@ -441,7 +485,11 @@ async function viewEditor(route) {
   const searchBox = h('input', { type: 'search', class: 'grow', placeholder: t('ed.search'), 'aria-label': t('ed.search') });
   searchBox.addEventListener('input', () => { search = searchBox.value.trim().toLowerCase(); applyFilter(); });
   const list = h('div');
-  workspace.append(h('div', { class: 'toolbar' }, h('h2', { class: 'mono', text: blockInfo.label }), seg, searchBox), list);
+  const codes = codesPanel(); codes.hidden = true;
+  const codesBtn = h('button', { class: 'btn sm', type: 'button', 'aria-expanded': 'false', text: t('ed.codes'), onclick: () => {
+    codes.hidden = !codes.hidden; codesBtn.setAttribute('aria-expanded', codes.hidden ? 'false' : 'true');
+  } });
+  workspace.append(h('div', { class: 'toolbar' }, h('h2', { class: 'mono', text: blockInfo.label }), seg, searchBox, codesBtn), codes, list);
 
   const rows = new Map();
   const updateBlockCount = () => {
@@ -454,7 +502,7 @@ async function viewEditor(route) {
     const row = { s, dirty: false };
     const field = can ? h('textarea', { rows: Math.min(8, 2 + (s.source.match(/\\n/g) || []).length), 'aria-label': t('ed.fieldLabel', { n: `${s.idx}` }), spellcheck: 'true', lang: route.lang }) : h('div', { class: 'readonly', lang: route.lang });
     const foot = h('div', { class: 'str-foot' });
-    const node = h('div', { class: 'str' }, h('div', { class: 'str-key' }, h('span', { text: `#${s.idx}` })), sourceNode(s.source, game.source_lang), h('div', { class: 'tr-col' }, field, foot));
+    const node = h('div', { class: 'str' }, h('div', { class: 'str-key' }, h('span', { text: `#${s.idx}` })), sourceNode(s.source, game.source_lang, can ? field : null), h('div', { class: 'tr-col' }, field, foot));
     Object.assign(row, { field, foot, node });
     if (can) {
       field.addEventListener('focus', () => node.classList.add('active'));
@@ -488,7 +536,21 @@ async function viewEditor(route) {
     else if (row.dirty) left.append(t('ed.unsaved'));
     else if (s.text) left.append(avatar(s.by, 'avatar sm'), `${who(s.by)} · ${ago(s.updated_at)}`);
     const acts = h('span', { class: 'acts' });
-    if (miss.length) acts.append(h('span', { class: 'chip warn', text: t('ed.missingTags', { tags: miss.join(' ') }) }));
+    for (const tag of miss) {
+      acts.append(can
+        ? h('button', { class: 'chip warn', type: 'button', title: `${tagInfo(tag)} · ${t('tag.clickToInsert')}`, text: t('ed.missingTags', { tags: tag }), onmousedown: (e) => e.preventDefault(), onclick: () => insertAt(row.field, tag) })
+        : h('span', { class: 'chip warn', text: t('ed.missingTags', { tags: tag }) }));
+    }
+    for (const tag of value ? unknownTags(value) : []) {
+      const fix = suggestTag(tag);
+      acts.append(can && fix
+        ? h('button', { class: 'chip bad', type: 'button', title: tagInfo(fix), text: `${t('ed.unknownTag', { tag })} · ${t('ed.useTag', { tag: fix })}`, onmousedown: (e) => e.preventDefault(), onclick: () => {
+          row.field.value = row.field.value.split(tag).join(fix);
+          row.field.dispatchEvent(new Event('input', { bubbles: true }));
+          row.field.focus();
+        } })
+        : h('span', { class: 'chip bad', text: t('ed.unknownTag', { tag }) }));
+    }
     if (s.status === 'revisada') acts.append(h('span', { class: 'chip good', text: t('ed.reviewed') }));
     if (review && s.text && !row.dirty) acts.append(h('button', { class: 'btn ghost sm', type: 'button', text: s.status === 'revisada' ? t('ed.unreview') : t('ed.approve'), onclick: () => setReview(row, s.status !== 'revisada') }));
     if (s.text) acts.append(h('button', { class: 'btn ghost sm', type: 'button', text: t('ed.history'), onclick: () => toggleHistory(row) }));
