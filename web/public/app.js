@@ -372,12 +372,23 @@ async function tabSettings(body, data) {
       catch (err) { ist.textContent = err.message; ist.className = 'status bad'; }
     } }), ist)));
 
+  const cst = h('p', { class: 'status', role: 'status' });
+  const cfile = h('input', { type: 'file', accept: '.tsv,.txt,text/tab-separated-values,text/plain', 'aria-label': t('set.file') });
+  const catPanel = h('div', { class: 'panel' }, h('div', { class: 'panel-head' }, h('h2', { text: t('set.categories') })), h('div', { class: 'panel-body' },
+    h('p', { class: 'muted small', text: t('set.categoriesLead') }),
+    cfile, h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', text: t('set.import'), onclick: async () => {
+      const f = cfile.files?.[0]; if (!f) { cst.textContent = t('set.pickFile'); cst.className = 'status bad'; return; }
+      cst.textContent = t('set.importing'); cst.className = 'status';
+      try { const r = await api('PUT', `/api/games/${slug}/categories`, await f.text(), true); cst.textContent = t('set.categoriesImported', { n: r.scenes, c: r.categories, k: r.known }); cst.className = 'status ok'; }
+      catch (err) { cst.textContent = err.message; cst.className = 'status bad'; }
+    } }), cst)));
+
   const exp = h('div', { class: 'panel' }, h('div', { class: 'panel-head' }, h('h2', { text: t('set.export') })), h('div', { class: 'panel-body' },
     h('p', { class: 'muted small', text: t('set.exportLead') }),
     h('div', { class: 'row' },
       h('a', { class: 'btn primary', href: `/api/games/${slug}/export`, download: `${game.slug}-traducoes.tsv`, text: t('set.downloadAll') }),
       h('a', { class: 'btn', href: `/api/games/${slug}/export?only=revisadas`, download: `${game.slug}-traducoes-revisadas.tsv`, text: t('set.downloadReviewed') }))));
-  body.replaceChildren(h('div', { class: 'grid' }, langs, imp, exp));
+  body.replaceChildren(h('div', { class: 'grid' }, langs, imp, catPanel, exp));
 }
 
 // ---------------------------------------------------------------- editor
@@ -471,7 +482,24 @@ async function viewEditor(route) {
     const term = globalInput.value.trim();
     location.hash = term ? `#/g/${game.slug}/t/${route.lang}/busca/${encodeURIComponent(term)}` : `#/g/${game.slug}/t/${route.lang}`;
   } }, globalInput);
-  const sidebar = h('aside', { class: 'sidebar' }, h('div', { class: 'sidebar-head' }, globalForm, filterInput), blockList);
+  // categories (optional, per scene): a filter plus group headers in the list
+  const cats = bl.categories || [];
+  const NONE = '-';
+  const catOf = (b) => b.category || NONE;
+  const catName = (c) => (c === NONE ? t('ed.noCategory') : c);
+  const catKey = `glifo.cat.${route.slug}`;
+  let category = '';
+  try { category = sessionStorage.getItem(catKey) || ''; } catch { /* storage may be blocked */ }
+  const catList = [...cats, ...(blocks.some((b) => !b.category) ? [NONE] : [])];
+  if (!catList.includes(category)) category = '';
+  const catTotals = (c) => blocks.filter((b) => catOf(b) === c).reduce((a, b) => ({ n: a.n + b.n, done: a.done + b.done }), { n: 0, done: 0 });
+  const catOptions = new Map(catList.map((c) => [c, h('option', { value: c, selected: c === category })]));
+  const catSelect = cats.length ? h('select', { 'aria-label': t('ed.category'), onchange: (e) => {
+    category = e.target.value;
+    try { sessionStorage.setItem(catKey, category); } catch { /* storage may be blocked */ }
+    paintBlocks();
+  } }, h('option', { value: '', text: t('ed.allCategories'), selected: !category }), [...catOptions.values()]) : null;
+  const sidebar = h('aside', { class: 'sidebar' }, h('div', { class: 'sidebar-head' }, globalForm, catSelect, filterInput), blockList);
   const workspace = h('section', { class: 'workspace' });
   app.replaceChildren(head, h('div', { class: 'editor' }, sidebar, workspace));
   // anyone can read; people without permission get an invitation to help instead of edit controls
@@ -482,10 +510,25 @@ async function viewEditor(route) {
 
   const paintBlocks = () => {
     const f = filterInput.value.trim().toLowerCase();
-    blockList.replaceChildren(...blocks.filter((b) => !f || b.label.toLowerCase().includes(f)).map((b) => h('button', {
-      class: 'block', type: 'button', 'aria-current': b.id === currentId ? 'true' : 'false',
-      onclick: () => { location.hash = `#/g/${game.slug}/t/${route.lang}/${b.id}`; },
-    }, h('span', { class: 'lbl', text: b.label }), h('span', { class: 'cnt', text: `${fmt(b.done)}/${fmt(b.n)}` }), bar(b.n, b.done, b.reviewed, 'bar thin'))));
+    for (const [c, opt] of catOptions) { const s = catTotals(c); opt.textContent = `${catName(c)} · ${pctText(pct(s.done, s.n))}`; }
+    let shown = blocks.filter((b) => (!f || b.label.toLowerCase().includes(f) || b.category.toLowerCase().includes(f)) && (!category || catOf(b) === category));
+    // with every category on screen, group the blocks under a header per category (file order)
+    const grouped = cats.length && !category;
+    if (grouped) shown = catList.flatMap((c) => shown.filter((b) => catOf(b) === c));
+    const items = [];
+    let last = null;
+    for (const b of shown) {
+      if (grouped && catOf(b) !== last) {
+        last = catOf(b);
+        const s = catTotals(last);
+        items.push(h('div', { class: 'cat-head' }, h('span', { text: catName(last) }), h('span', { class: 'cnt', text: pctText(pct(s.done, s.n)) })));
+      }
+      items.push(h('button', {
+        class: 'block', type: 'button', 'aria-current': b.id === currentId ? 'true' : 'false',
+        onclick: () => { location.hash = `#/g/${game.slug}/t/${route.lang}/${b.id}`; },
+      }, h('span', { class: 'lbl', text: b.label }), h('span', { class: 'cnt', text: `${fmt(b.done)}/${fmt(b.n)}` }), bar(b.n, b.done, b.reviewed, 'bar thin')));
+    }
+    blockList.replaceChildren(...items);
   };
   filterInput.addEventListener('input', paintBlocks);
   paintBlocks();
@@ -532,11 +575,12 @@ async function viewEditor(route) {
     const field = can ? h('textarea', { rows: Math.min(8, 2 + (s.source.match(/\\n/g) || []).length), 'aria-label': t('ed.fieldLabel', { n: `${s.idx}` }), spellcheck: 'true', lang: route.lang }) : h('div', { class: 'readonly', lang: route.lang });
     const foot = h('div', { class: 'str-foot' });
     const key = h('div', { class: 'str-key' }, h('span', { text: `#${s.idx}` }),
-      searching ? h('a', { href: `#/g/${game.slug}/t/${route.lang}/${s.block_id}/${s.id}`, text: blockById.get(s.block_id)?.label || '' }) : null);
+      searching ? h('a', { href: `#/g/${game.slug}/t/${route.lang}/${s.block_id}/${s.id}`, text: blockById.get(s.block_id)?.label || '' }) : null,
+      s.copies ? h('a', { class: 'copies', href: `#/g/${game.slug}/t/${route.lang}/busca/${encodeURIComponent(s.source)}`, title: t('ed.copiesHint'), text: t('ed.copies', { n: s.copies }) }) : null);
     const node = h('div', { class: 'str' }, key, sourceNode(s.source, game.source_lang, can ? field : null), h('div', { class: 'tr-col' }, field, foot));
     Object.assign(row, { field, foot, node });
     if (can) {
-      field.addEventListener('focus', () => node.classList.add('active'));
+      field.addEventListener('focus', () => { node.classList.add('active'); showSuggestions(row); });
       field.addEventListener('blur', () => { node.classList.remove('active'); if (row.dirty) save(row); });
       field.addEventListener('input', () => { row.dirty = true; paintFoot(row); });
       field.addEventListener('keydown', (e) => {
@@ -588,6 +632,9 @@ async function viewEditor(route) {
         } })
         : h('span', { class: 'chip bad', text: t('ed.unknownTag', { tag }) }));
     }
+    if (can && row.differ && s.text && !row.dirty) {
+      acts.append(h('button', { class: 'chip warn', type: 'button', title: t('ed.applyAllHint'), text: `${t('ed.differ', { n: row.differ })} · ${t('ed.applyAll')}`, onclick: () => applyToCopies(row) }));
+    }
     if (s.status === 'revisada') acts.append(h('span', { class: 'chip good', text: t('ed.reviewed') }));
     if (review && s.text && !row.dirty) acts.append(h('button', { class: 'btn ghost sm', type: 'button', text: s.status === 'revisada' ? t('ed.unreview') : t('ed.approve'), onclick: () => setReview(row, s.status !== 'revisada') }));
     if (s.text) acts.append(h('button', { class: 'btn ghost sm', type: 'button', text: t('ed.history'), onclick: () => toggleHistory(row) }));
@@ -607,6 +654,8 @@ async function viewEditor(route) {
     try {
       const r = await api('PUT', `/api/games/${slug}/strings/${row.s.id}/${encodeURIComponent(route.lang)}`, force ? { text } : { text, base: row.s.updated_at || null });
       change(row, () => Object.assign(row.s, { text: r.text, status: r.status, updated_at: r.updated_at, by: r.by }));
+      row.differ = r.differ || 0;
+      if (r.filled) toast(t('ed.filled', { n: r.filled }));
     } catch (e) {
       row.dirty = true; row.error = e.message; row.conflict = e.status === 409;
     } finally { row.saving = false; paintFoot(row); }
@@ -614,6 +663,35 @@ async function viewEditor(route) {
   async function setReview(row, approved) {
     try { const r = await api('POST', `/api/games/${slug}/strings/${row.s.id}/${encodeURIComponent(route.lang)}/review`, { approved }); change(row, () => { row.s.status = r.status; }); paintFoot(row); }
     catch (e) { toast(e.message); }
+  }
+  async function applyToCopies(row) {
+    try {
+      const r = await api('POST', `/api/games/${slug}/strings/${row.s.id}/${encodeURIComponent(route.lang)}/copies`);
+      row.differ = 0; paintFoot(row);
+      toast(t('ed.applied', { n: r.written }));
+    } catch (e) { toast(e.message); }
+  }
+  // Translations already made for similar sources, under the string being edited.
+  let suggesting = null;
+  async function showSuggestions(row) {
+    if (suggesting === row) return;
+    suggesting?.suggest?.remove();
+    suggesting = row;
+    if (!row.similar) {
+      try { row.similar = (await api('GET', `/api/games/${slug}/strings/${row.s.id}/${encodeURIComponent(route.lang)}/similar`)).similar; } catch { row.similar = []; }
+    }
+    const items = row.similar.filter((x) => x.text !== row.s.text);
+    if (suggesting !== row || !items.length) return;
+    row.suggest = h('div', { class: 'suggest' }, h('div', { class: 'small muted', text: t('ed.similar') }),
+      items.map((x) => h('div', { class: 'suggest-item' },
+        h('span', { class: `chip ${x.score === 1 ? 'accent' : ''}`, title: t('ed.similarScore'), text: pctText(Math.round(x.score * 100)) }),
+        h('div', { class: 'suggest-text' }, h('div', { class: 'src-mini', lang: game.source_lang, text: toField(x.source) }), h('div', { lang: route.lang, text: toField(x.text) })),
+        h('button', { class: 'btn ghost sm', type: 'button', text: t('ed.use'), onmousedown: (e) => e.preventDefault(), onclick: () => {
+          row.field.value = toField(x.text);
+          row.field.dispatchEvent(new Event('input', { bubbles: true }));
+          row.field.focus();
+        } }))));
+    row.node.append(row.suggest);
   }
   async function toggleHistory(row) {
     const open = row.node.querySelector('.history');
@@ -629,6 +707,7 @@ async function viewEditor(route) {
     } catch (e) { box.replaceChildren(h('span', { class: 'status bad', text: e.message })); }
   }
 
+  const repaintBlocks = debounce(paintBlocks, 200);
   const refreshLangProgress = debounce(async () => {
     try {
       const d = await api('GET', `/api/games/${slug}`);
@@ -644,6 +723,10 @@ async function viewEditor(route) {
       change(row, () => Object.assign(row.s, { text: ev.text, status: ev.status, updated_at: ev.updated_at || row.s.updated_at, ...(ev.by ? { by: ev.by } : {}) }));
       if (row.dirty && !mine && ev.by) row.error = t('ed.changedBy', { who: who(ev.by) });
       paintValue(row); paintFoot(row);
+    } else if (ev.type === 'translation' && ev.lang === route.lang && ev.fresh && blockById.has(ev.block_id)) {
+      // a copy in a block that is not open was just filled: move that block's counter
+      blockById.get(ev.block_id).done += 1;
+      repaintBlocks();
     }
     if (ev.type === 'progress') refreshLangProgress();
   });

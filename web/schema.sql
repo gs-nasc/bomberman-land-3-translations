@@ -128,3 +128,13 @@ create table if not exists activity (
   created_at  timestamptz not null default now()
 );
 create index if not exists activity_game on activity(game_id, created_at desc);
+
+-- Optional grouping of scenes for the editor sidebar. scene = "<archive>/<entry>", like blocks.scene;
+-- position keeps the order of the uploaded file (categories are listed by their first scene).
+create table if not exists scene_categories (
+  game_id     int not null references games(id) on delete cascade,
+  scene       text not null,
+  category    text not null,
+  position    int not null default 0,
+  primary key (game_id, scene)
+);

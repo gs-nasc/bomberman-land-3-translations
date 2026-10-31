@@ -1,5 +1,6 @@
 // End-to-end check against a running server started with DEV_LOGIN=1 and ADMIN_GITHUB_LOGINS=admin.
-// Usage: node test/e2e.mjs http://localhost:3999 ../dialogos_jp.tsv
+// Usage: node test/e2e.mjs http://localhost:3999 ../dialogos_jp.tsv ../categorias.tsv
+// Unit tests (no server needed): node --test test/
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 
@@ -147,5 +148,47 @@ const fresh = (await call(alice, 'GET', `/api/games/${SLUG}/blocks/${block.id}?l
 await call(admin, 'PUT', `/api/games/${SLUG}/strings/${s2.id}/pt`, { text: 'Outra versão' });
 const c2 = await fetch(`${BASE}/api/games/${SLUG}/strings/${s2.id}/pt`, { method: 'PUT', headers: { Cookie: alice, 'X-Requested-With': 'glifo', 'X-Lang': 'en', 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'x', base: fresh.updated_at }) });
 assert.equal((await c2.json()).error, 'admin changed this string while you were editing.'); ok('message templates fill in who changed the string');
+
+// categories per scene
+const CATS = readFileSync(process.argv[4] || '../categorias.tsv', 'utf8');
+assert.equal((await call(alice, 'PUT', `/api/games/${SLUG}/categories`, CATS, { raw: true })).status, 403); ok('only coordination changes categories');
+assert.equal((await call(admin, 'PUT', `/api/games/${SLUG}/categories`, 'x\ty\n', { raw: true })).status, 400); ok('a category file without the needed columns is refused');
+const cat = (await call(admin, 'PUT', `/api/games/${SLUG}/categories`, CATS, { raw: true })).data;
+assert.equal(cat.scenes, 88); assert.equal(cat.categories, 13); assert.ok(cat.known > 0 && cat.known <= 88); ok(`categories imported: ${cat.scenes} scenes, ${cat.known} with their own block`);
+const withCats = (await call('', 'GET', `/api/games/${SLUG}/blocks?lang=pt`)).data;
+assert.equal(withCats.categories.length, 13); assert.equal(withCats.categories[0], 'Menus e sistema');
+assert.equal(withCats.blocks.find((b) => b.scene === 'CDDATA0/e0000').category, 'Menus e sistema');
+assert.equal(withCats.blocks.find((b) => b.scene === 'CDDATA/e0057').category, 'BOMPAD (menu de bolso)'); ok('blocks carry their category; categories keep the file order');
+await call(admin, 'PUT', `/api/games/${SLUG}/categories`, CATS, { raw: true });
+assert.equal((await call('', 'GET', `/api/games/${SLUG}/blocks?lang=pt`)).data.categories.length, 13); ok('re-uploading categories replaces them');
+
+// repeated lines: saving fills the empty copies, different ones are reported and can be replaced
+const red = (await search(alice, 'レッドピース')).data.strings.filter((r) => r.source === 'レッドピース');
+assert.ok(red.length > 2); assert.ok(red.every((r) => r.copies === red.length - 1)); ok(`a repeated line knows its ${red.length - 1} copies`);
+const doneBefore = (await call(bob, 'GET', `/api/games/${SLUG}`)).data.langs.find((l) => l.lang === 'pt').done;
+const first = (await call(alice, 'PUT', `/api/games/${SLUG}/strings/${red[0].id}/pt`, { text: 'Peça Vermelha' })).data;
+assert.equal(first.filled, red.length - 1); assert.equal(first.differ, 0); ok('saving a repeated line fills every empty copy');
+assert.equal((await call(bob, 'GET', `/api/games/${SLUG}`)).data.langs.find((l) => l.lang === 'pt').done, doneBefore + red.length); ok('the copies count in the progress');
+const second = (await call(alice, 'PUT', `/api/games/${SLUG}/strings/${red[1].id}/pt`, { text: 'Peça vermelha' })).data;
+assert.equal(second.filled, 0); assert.equal(second.differ, red.length - 1); ok('a copy with another translation is not overwritten, only reported');
+assert.equal((await call(bob, 'POST', `/api/games/${SLUG}/strings/${red[1].id}/pt/copies`)).status, 403); ok('only translators of the language replace copies');
+const applied = (await call(alice, 'POST', `/api/games/${SLUG}/strings/${red[1].id}/pt/copies`)).data;
+assert.equal(applied.written, red.length - 1);
+const after = (await search(alice, 'レッドピース')).data.strings.filter((r) => r.source === 'レッドピース');
+assert.ok(after.every((r) => r.text === 'Peça vermelha' && r.status === 'traduzida')); ok('"use this one everywhere" replaces every copy');
+assert.equal((await call(alice, 'POST', `/api/games/${SLUG}/strings/${red[1].id}/pt/copies`)).data.written, 0); ok('replacing again changes nothing');
+assert.ok((await call(alice, 'GET', `/api/games/${SLUG}/strings/${red[2].id}/pt/history`)).data.history.length >= 2); ok('copies keep their own history');
+const untranslated = (await call(admin, 'GET', `/api/games/${SLUG}/blocks/${block.id}?lang=es`)).data.strings[0];
+assert.equal((await call(admin, 'POST', `/api/games/${SLUG}/strings/${untranslated.id}/es/copies`)).status, 404); ok('nothing to copy without a translation');
+const cleared = (await call(alice, 'PUT', `/api/games/${SLUG}/strings/${red[3].id}/pt`, { text: '' })).data;
+assert.equal(cleared.filled, 0); assert.equal(cleared.differ, 0); ok('clearing a translation does not touch the copies');
+
+// similar lines suggest translations already made
+const blue = (await search(alice, 'ブルーピース')).data.strings.find((r) => r.source === 'ブルーピース');
+const sim = (await call('', 'GET', `/api/games/${SLUG}/strings/${blue.id}/pt/similar`)).data.similar;
+const sug = sim.find((x) => x.text === 'Peça vermelha');
+assert.ok(sug && sug.score < 1 && sug.uses >= red.length - 2 && sug.source === 'レッドピース'); ok('a similar line suggests the translation of レッドピース');
+assert.ok(sim.length <= 5); assert.equal(new Set(sim.map((x) => x.text)).size, sim.length); ok('suggestions are few and never repeat a translation');
+assert.deepEqual((await call('', 'GET', `/api/games/${SLUG}/strings/${blue.id}/xx/similar`)).data.similar, []); ok('no suggestions in a language without translations');
 
 console.log(`\n${passed} checks passed`);

@@ -7,6 +7,7 @@ import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { langOf, tr } from './messages.js';
+import { buildIndex, copiesOf, parseCategories, pickSuggestions, similarTo } from './sources.js';
 
 const env = (k, d) => process.env[k] ?? d;
 const PORT = +env('PORT', 3000);
@@ -170,6 +171,44 @@ async function langStats(gameId) {
   return { total, langs };
 }
 
+// Source text of every string, per game, kept in memory to find repeated and similar strings.
+// Rebuilt after an import (the only thing that changes sources).
+const indexes = new Map(); // game id -> Promise<index>
+function sourceIndex(gameId) {
+  if (!indexes.has(gameId)) {
+    const p = q('select id, block_id, source from strings where game_id = $1', [gameId]).then((r) => buildIndex(r.rows));
+    p.catch(() => indexes.delete(gameId));
+    indexes.set(gameId, p);
+  }
+  return indexes.get(gameId);
+}
+async function withCopies(gameId, rows) {
+  const idx = await sourceIndex(gameId);
+  return rows.map((r) => ({ ...r, copies: copiesOf(idx, r.id).length }));
+}
+
+// Write `text` into other strings (copies of the same source). overwrite = false only fills the empty
+// ones. Every write goes to the history and to open pages, like a normal save.
+async function writeCopies(game, user, lang, ids, text, overwrite) {
+  if (!ids.length) return [];
+  const rows = (await q(`insert into translations (string_id, lang, text, status, updated_by, updated_at)
+    select u, $2, $3, 'traduzida', $4, now() from unnest($1::int[]) u
+    on conflict (string_id, lang) do ${overwrite ? `update set text = excluded.text, status = 'traduzida', updated_by = excluded.updated_by, updated_at = now()
+      where translations.text <> excluded.text` : 'nothing'}
+    returning string_id, status, updated_at, (xmax = 0) as fresh`, [ids, lang, text, user.id])).rows;
+  if (!rows.length) return rows;
+  await q(`insert into translation_history (string_id, lang, text, status, user_id) select u, $2, $3, s, $4 from unnest($1::int[], $5::text[]) as x(u, s)`,
+    [rows.map((r) => r.string_id), lang, text, user.id, rows.map((r) => r.status)]);
+  const idx = await sourceIndex(game.id);
+  const by = { login: user.login, name: user.name, avatar_url: user.avatar_url };
+  for (const r of rows) broadcast(game.slug, { type: 'translation', id: r.string_id, block_id: idx.byId.get(r.string_id)?.block_id, lang, text, status: r.status, updated_at: r.updated_at, by, fresh: r.fresh });
+  return rows;
+}
+async function differingCopies(lang, ids, text) {
+  if (!ids.length) return 0;
+  return +(await one('select count(*) n from translations where string_id = any($1::int[]) and lang = $2 and text <> $3', [ids, lang, text])).n;
+}
+
 async function publicUser(u) { return u && { id: u.id, login: u.login, name: u.name, avatar_url: u.avatar_url, is_admin: u.is_admin }; }
 
 // ---------------------------------------------------------------- import / export
@@ -233,6 +272,7 @@ async function importTsv(game, text) {
     }
     await client.query('commit');
   } catch (e) { await client.query('rollback'); throw e; } finally { client.release(); }
+  indexes.delete(game.id);
   return { blocks: blocks.length, strings: blocks.reduce((a, b) => a + b.rows.length, 0) };
 }
 
@@ -308,11 +348,33 @@ route('DELETE', '/api/games/:slug/langs/:lang', async ({ user, p }) => {
 
 route('GET', '/api/games/:slug/blocks', async ({ user, url, p }) => {
   const g = await gameBySlug(p.slug); const lang = url.searchParams.get('lang') || '';
-  const rows = (await q(`select b.id, b.label, b.scene, count(s.id) n,
+  const rows = (await q(`select b.id, b.label, b.scene, c.category, count(s.id) n,
       count(t.string_id) filter (where t.text <> '') done, count(t.string_id) filter (where t.status = 'revisada') reviewed
     from blocks b join strings s on s.block_id = b.id left join translations t on t.string_id = s.id and t.lang = $2
-    where b.game_id = $1 group by b.id order by b.position`, [g.id, lang])).rows;
-  return { blocks: rows.map((r) => ({ id: r.id, label: r.label, scene: r.scene, n: +r.n, done: +r.done, reviewed: +r.reviewed })) };
+    left join scene_categories c on c.game_id = b.game_id and c.scene = b.scene
+    where b.game_id = $1 group by b.id, c.category order by b.position`, [g.id, lang])).rows;
+  const categories = (await q('select category from scene_categories where game_id = $1 group by category order by min(position), category', [g.id])).rows.map((r) => r.category);
+  return { categories, blocks: rows.map((r) => ({ id: r.id, label: r.label, scene: r.scene, category: r.category || '', n: +r.n, done: +r.done, reviewed: +r.reviewed })) };
+});
+
+// Replace the scene -> category map (TSV: archive, entry, categoria).
+route('PUT', '/api/games/:slug/categories', async ({ user, req, p }) => {
+  const g = await gameBySlug(p.slug); const a = await access(requireUser(user), g);
+  if (!a.manage) fail(403, 'Só a coordenação muda as categorias.');
+  const rows = parseCategories(await readBody(req, 2 * 1024 * 1024)) || fail(400, 'O arquivo de categorias precisa das colunas archive, entry e categoria.');
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    await client.query('delete from scene_categories where game_id = $1', [g.id]);
+    await client.query(`insert into scene_categories (game_id, scene, category, position) select $1, s, c, p from unnest($2::text[], $3::text[], $4::int[]) as u(s, c, p)`,
+      [g.id, rows.map((r) => r.scene), rows.map((r) => r.category), rows.map((r) => r.position)]);
+    await client.query('commit');
+  } catch (e) { await client.query('rollback'); throw e; } finally { client.release(); }
+  const known = +(await one('select count(distinct scene) n from blocks where game_id = $1 and scene = any($2::text[])', [g.id, rows.map((r) => r.scene)])).n;
+  const r = { scenes: rows.length, categories: new Set(rows.map((x) => x.category)).size, known };
+  await log(g, user, 'categorias_importadas', null, r);
+  broadcast(g.slug, { type: 'progress' });
+  return r;
 });
 
 const STRING_COLS = `s.id, s.idx, s.source, s.block_id, t.text, t.status, t.updated_at, u.login, u.name, u.avatar_url
@@ -324,7 +386,28 @@ const stringRow = (r) => ({ id: r.id, idx: r.idx, source: r.source, block_id: r.
 route('GET', '/api/games/:slug/blocks/:id', async ({ url, p }) => {
   const g = await gameBySlug(p.slug);
   const rows = (await q(`select ${STRING_COLS} where s.game_id = $1 and s.block_id = $3 order by s.idx`, [g.id, url.searchParams.get('lang') || '', +p.id])).rows;
-  return { strings: rows.map(stringRow) };
+  return { strings: await withCopies(g.id, rows.map(stringRow)) };
+});
+
+// Translations already made for strings whose source looks like this one (translation memory).
+route('GET', '/api/games/:slug/strings/:id/:lang/similar', async ({ p }) => {
+  const g = await gameBySlug(p.slug);
+  const matches = similarTo(await sourceIndex(g.id), +p.id);
+  if (!matches.length) return { similar: [] };
+  const tr = new Map((await q('select string_id, text, status from translations where lang = $1 and string_id = any($2::int[])', [p.lang, matches.map((m) => m.id)])).rows
+    .map((r) => [r.string_id, r]));
+  return { similar: pickSuggestions(matches, tr) };
+});
+
+// Put this string's translation in every copy of its source, replacing different translations.
+route('POST', '/api/games/:slug/strings/:id/:lang/copies', async ({ user, p }) => {
+  const g = await gameBySlug(p.slug); const a = await access(requireUser(user), g);
+  if (!canTranslate(a, p.lang)) fail(403, 'Você não traduz este idioma neste jogo.');
+  const cur = await one('select t.text from translations t join strings s on s.id = t.string_id where t.string_id = $1 and t.lang = $2 and s.game_id = $3', [+p.id, p.lang, g.id])
+    || fail(404, 'Não há tradução para copiar.');
+  const written = await writeCopies(g, user, p.lang, copiesOf(await sourceIndex(g.id), +p.id), cur.text, true);
+  if (written.length) broadcast(g.slug, { type: 'progress' });
+  return { written: written.length };
 });
 
 // Search every block at once, in the source and in the translation of one language.
@@ -336,7 +419,7 @@ route('GET', '/api/games/:slug/search', async ({ url, p }) => {
   const like = `%${term.replace(/[\\%_]/g, (c) => `\\${c}`).replace(/\r?\n/g, '\\\\n')}%`;
   const rows = (await q(`select ${STRING_COLS} join blocks b on b.id = s.block_id
     where s.game_id = $1 and (s.source ilike $3 or t.text ilike $3) order by b.position, s.idx limit ${SEARCH_LIMIT + 1}`, [g.id, url.searchParams.get('lang') || '', like])).rows;
-  return { strings: rows.slice(0, SEARCH_LIMIT).map(stringRow), truncated: rows.length > SEARCH_LIMIT };
+  return { strings: await withCopies(g.id, rows.slice(0, SEARCH_LIMIT).map(stringRow)), truncated: rows.length > SEARCH_LIMIT };
 });
 
 route('PUT', '/api/games/:slug/strings/:id/:lang', async ({ user, req, p }) => {
@@ -359,8 +442,11 @@ route('PUT', '/api/games/:slug/strings/:id/:lang', async ({ user, req, p }) => {
   await q('insert into translation_history (string_id, lang, text, status, user_id) values ($1, $2, $3, $4, $5)', [s.id, p.lang, text, row?.status || 'apagada', user.id]);
   const event = { type: 'translation', id: s.id, lang: p.lang, text, status: row?.status || null, updated_at: row?.updated_at || null, by: { login: user.login, name: user.name, avatar_url: user.avatar_url } };
   broadcast(g.slug, event);
+  // the same source elsewhere gets this translation too, but only where it is still empty
+  const copies = text ? copiesOf(await sourceIndex(g.id), s.id) : [];
+  const filled = (await writeCopies(g, user, p.lang, copies, text, false)).length;
   broadcast(g.slug, { type: 'progress' });
-  return event;
+  return { ...event, filled, differ: await differingCopies(p.lang, copies, text) };
 });
 
 route('POST', '/api/games/:slug/strings/:id/:lang/review', async ({ user, req, p }) => {

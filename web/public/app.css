@@ -260,3 +260,16 @@ button.chip.bad:hover { text-decoration: underline; }
 .code-row .tok { font-family: var(--mono); font-size: 12px; color: var(--accent); }
 .code-row .br { font-family: var(--mono); color: var(--muted); }
 @media (max-width: 560px) { .code-row { grid-template-columns: minmax(0, 1fr); gap: 2px; } }
+
+/* categories in the sidebar */
+.cat-head { position: sticky; top: 0; z-index: 1; display: flex; justify-content: space-between; gap: 8px; padding: 8px 14px 6px; background: var(--subtle); border-bottom: 1px solid var(--line); font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-2); }
+.sidebar-list .block { scroll-margin-top: 32px; }
+.cat-head .cnt { font-family: var(--mono); font-weight: 400; color: var(--muted); text-transform: none; }
+
+/* repeated lines and suggestions from similar ones */
+.str-key .copies { color: var(--muted); text-decoration: underline dotted; text-underline-offset: 2px; }
+.str-key .copies:hover { color: var(--accent); }
+.suggest { grid-column: 1 / -1; background: var(--subtle); border-radius: 8px; padding: 10px 12px; display: grid; gap: 8px; font-size: 13px; }
+.suggest-item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+.suggest-text { display: grid; gap: 2px; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.suggest-text .src-mini { font-family: var(--jp); font-size: 12px; color: var(--muted); }

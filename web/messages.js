@@ -39,6 +39,9 @@ const M = {
   'Rota não encontrada.': { en: 'Route not found.', es: 'Ruta no encontrada.', ja: 'ルートが見つかりません。' },
   'Pedido recusado.': { en: 'Request refused.', es: 'Solicitud rechazada.', ja: 'リクエストが拒否されました。' },
   'Erro no servidor. Tente de novo.': { en: 'Server error. Please try again.', es: 'Error del servidor. Inténtalo de nuevo.', ja: 'サーバーエラーです。もう一度お試しください。' },
+  'Só a coordenação muda as categorias.': { en: 'Only coordinators can change the categories.', es: 'Solo la coordinación cambia las categorías.', ja: 'カテゴリを変更できるのはコーディネーターのみです。' },
+  'O arquivo de categorias precisa das colunas archive, entry e categoria.': { en: 'The category file needs the columns archive, entry and categoria.', es: 'El archivo de categorías necesita las columnas archive, entry y categoria.', ja: 'カテゴリファイルには archive、entry、categoria の列が必要です。' },
+  'Não há tradução para copiar.': { en: 'There is no translation to copy.', es: 'No hay traducción para copiar.', ja: 'コピーする訳文がありません。' },
   'Não encontrado.': { en: 'Not found.', es: 'No encontrado.', ja: '見つかりません。' },
   'Arquivo sem a coluna "{col}". Use o TSV gerado pelo textscan.py.': { en: 'File has no "{col}" column. Use the TSV made by textscan.py.', es: 'El archivo no tiene la columna "{col}". Usa el TSV generado por textscan.py.', ja: 'ファイルに「{col}」列がありません。textscan.py が出力した TSV を使ってください。' },
 };
