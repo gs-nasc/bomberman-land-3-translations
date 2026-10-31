@@ -87,9 +87,10 @@ function langSwitch() {
 
 function renderChrome(route) {
   document.title = 'Glifo';
-  $('#nav').replaceChildren(
+  // replaceChildren() would print a null as the text "null", so leave it out instead
+  $('#nav').replaceChildren(...[
     h('a', { href: '#/', 'aria-current': route.name === 'home' ? 'page' : null, text: t('nav.projects') }),
-    S.me?.is_admin ? h('a', { href: '#/admin', 'aria-current': route.name === 'admin' ? 'page' : null, text: t('nav.admin') }) : null);
+    S.me?.is_admin ? h('a', { href: '#/admin', 'aria-current': route.name === 'admin' ? 'page' : null, text: t('nav.admin') }) : null].filter(Boolean));
   const acc = $('#account'); acc.replaceChildren(langSwitch());
   if (S.me) {
     acc.append(h('span', { class: 'small muted login-name', text: S.me.login }), avatar(S.me),
@@ -116,7 +117,13 @@ function parseRoute() {
   const parts = (location.hash.replace(/^#\/?/, '') || '').split('/').filter(Boolean).map(decodeURIComponent);
   if (parts[0] === 'admin') return { name: 'admin' };
   if (parts[0] === 'g' && parts[1]) {
-    if (parts[2] === 't' && parts[3]) return { name: 'editor', slug: parts[1], lang: parts[3], block: parts[4] ? +parts[4] : null };
+    if (parts[2] === 't' && parts[3]) {
+      // #/g/<slug>/t/<lang>[/<block>[/<string>]] or #/g/<slug>/t/<lang>/busca/<term>
+      const r = { name: 'editor', slug: parts[1], lang: parts[3], block: null, focus: null, search: null };
+      if (parts[4] === 'busca') r.search = parts[5] || '';
+      else if (parts[4]) { r.block = +parts[4]; r.focus = parts[5] ? +parts[5] : null; }
+      return r;
+    }
     return { name: 'game', slug: parts[1], tab: parts[2] || 'idiomas' };
   }
   return { name: 'home' };
@@ -234,7 +241,7 @@ async function tabLangs(body, data) {
   }
   const extra = [];
   if (!S.me && rows.length) extra.push(h('div', { class: 'notice' }, h('p', { text: t('langs.signinNotice') }), S.auth.github ? loginButton() : null));
-  else if (S.me && !a.seeText) extra.push(h('div', { class: 'notice' }, h('p', { text: t('langs.joinNotice') }), h('a', { class: 'btn', href: `#/g/${game.slug}/equipe`, text: t('langs.join') })));
+  else if (S.me && !a.manage && !a.member) extra.push(h('div', { class: 'notice' }, h('p', { text: t('langs.joinNotice') }), h('a', { class: 'btn', href: `#/g/${game.slug}/equipe`, text: t('langs.join') })));
   body.replaceChildren(panel, ...extra);
 }
 
@@ -367,7 +374,9 @@ async function tabSettings(body, data) {
 
   const exp = h('div', { class: 'panel' }, h('div', { class: 'panel-head' }, h('h2', { text: t('set.export') })), h('div', { class: 'panel-body' },
     h('p', { class: 'muted small', text: t('set.exportLead') }),
-    h('div', {}, h('a', { class: 'btn', href: `/api/games/${slug}/export`, download: `${game.slug}-traducoes.tsv`, text: t('set.download') }))));
+    h('div', { class: 'row' },
+      h('a', { class: 'btn primary', href: `/api/games/${slug}/export`, download: `${game.slug}-traducoes.tsv`, text: t('set.downloadAll') }),
+      h('a', { class: 'btn', href: `/api/games/${slug}/export?only=revisadas`, download: `${game.slug}-traducoes-revisadas.tsv`, text: t('set.downloadReviewed') }))));
   body.replaceChildren(h('div', { class: 'grid' }, langs, imp, exp));
 }
 
@@ -444,22 +453,30 @@ async function viewEditor(route) {
   const can = a.manage || !!a.langs[route.lang];
   const review = a.manage || a.langs[route.lang] === 'revisor';
   const blocks = bl.blocks;
-  const currentId = route.block && blocks.some((b) => b.id === route.block) ? route.block : blocks[0]?.id;
+  const blockById = new Map(blocks.map((b) => [b.id, b]));
+  const searching = route.search !== null;
+  const currentId = searching ? null : route.block && blockById.has(route.block) ? route.block : blocks[0]?.id;
   const head = h('div', { class: 'page-head' },
     h('div', { class: 'lead' }, h('a', { class: 'eyebrow', href: `#/g/${game.slug}`, text: t('ed.back', { game: game.name }) }), h('h1', { text: langName(route.lang) }),
       h('div', { class: 'meta-row' }, h('span', { text: can ? (review ? t('ed.canReview') : t('ed.canTranslate')) : t('ed.readOnly') }),
-        h('span', {}, h('span', { class: 'kbd', text: 'Ctrl' }), ' + ', h('span', { class: 'kbd', text: 'Enter' }), ` ${t('ed.shortcut')}`))),
+        can ? h('span', {}, h('span', { class: 'kbd', text: 'Ctrl' }), ' + ', h('span', { class: 'kbd', text: 'Enter' }), ` ${t('ed.shortcut')}`) : null)),
     h('div', { style: 'min-width:240px;display:grid;gap:6px' }, h('div', { class: 'progress-cell', id: 'lang-progress' }, bar(data.total, L.done, L.reviewed), h('span', { class: 'pct', text: pctText(pct(L.done, data.total)) })),
       h('span', { class: 'small muted num', id: 'lang-count', text: t('ed.count', { d: L.done, t: data.total, r: L.reviewed }) })));
 
   const filterInput = h('input', { type: 'search', placeholder: t('ed.filterBlocks'), 'aria-label': t('ed.filterBlocks') });
   const blockList = h('div', { class: 'sidebar-list' });
-  const sidebar = h('aside', { class: 'sidebar' }, h('div', { class: 'sidebar-head' }, filterInput), blockList);
+  const globalInput = h('input', { type: 'search', value: route.search || '', placeholder: t('ed.globalSearch'), 'aria-label': t('ed.globalSearch') });
+  const globalForm = h('form', { role: 'search', onsubmit: (e) => {
+    e.preventDefault();
+    const term = globalInput.value.trim();
+    location.hash = term ? `#/g/${game.slug}/t/${route.lang}/busca/${encodeURIComponent(term)}` : `#/g/${game.slug}/t/${route.lang}`;
+  } }, globalInput);
+  const sidebar = h('aside', { class: 'sidebar' }, h('div', { class: 'sidebar-head' }, globalForm, filterInput), blockList);
   const workspace = h('section', { class: 'workspace' });
   app.replaceChildren(head, h('div', { class: 'editor' }, sidebar, workspace));
-  if (!a.seeText) {
-    workspace.append(h('div', { class: 'empty' }, h('h3', { text: S.me ? t('ed.teamOnly') : t('ed.signinToSee') }),
-      h('p', { text: S.me ? t('ed.askTeam') : t('ed.restricted') }),
+  // anyone can read; people without permission get an invitation to help instead of edit controls
+  if (!can) {
+    workspace.append(h('div', { class: 'notice' }, h('p', { text: S.me ? t('ed.askTeam') : t('ed.signinToHelp') }),
       S.me ? h('a', { class: 'btn', href: `#/g/${game.slug}/equipe`, text: t('ed.goTeam') }) : (S.auth.github ? loginButton() : null)));
   }
 
@@ -473,10 +490,19 @@ async function viewEditor(route) {
   filterInput.addEventListener('input', paintBlocks);
   paintBlocks();
   blockList.querySelector('[aria-current="true"]')?.scrollIntoView({ block: 'nearest' });
-  if (!a.seeText || !currentId) { if (a.seeText) workspace.append(h('div', { class: 'empty' }, h('p', { text: t('ed.noText') }))); return; }
+  if (!blocks.length) { workspace.append(h('div', { class: 'empty' }, h('p', { text: t('ed.noText') }))); return; }
 
-  const blockInfo = blocks.find((b) => b.id === currentId);
-  const { strings } = await api('GET', `/api/games/${slug}/blocks/${currentId}?lang=${encodeURIComponent(route.lang)}`);
+  let strings, title, summary = null;
+  if (searching) {
+    const r = route.search ? await api('GET', `/api/games/${slug}/search?lang=${encodeURIComponent(route.lang)}&q=${encodeURIComponent(route.search)}`) : { strings: [], truncated: false };
+    strings = r.strings;
+    title = t('ed.searchTitle', { q: route.search });
+    summary = h('p', { class: 'muted small search-summary', role: 'status',
+      text: !strings.length ? t('ed.searchNone') : r.truncated ? t('ed.searchTruncated', { n: strings.length }) : t('ed.searchCount', { n: strings.length }) });
+  } else {
+    strings = (await api('GET', `/api/games/${slug}/blocks/${currentId}?lang=${encodeURIComponent(route.lang)}`)).strings;
+    title = blockById.get(currentId).label;
+  }
   let mode = 'todas', search = '';
   const seg = h('div', { class: 'seg', role: 'group', 'aria-label': t('ed.show') });
   for (const [k, label] of [['todas', t('ed.all')], ['faltando', t('ed.missing')], ['revisar', t('ed.toReview')]]) {
@@ -489,20 +515,25 @@ async function viewEditor(route) {
   const codesBtn = h('button', { class: 'btn sm', type: 'button', 'aria-expanded': 'false', text: t('ed.codes'), onclick: () => {
     codes.hidden = !codes.hidden; codesBtn.setAttribute('aria-expanded', codes.hidden ? 'false' : 'true');
   } });
-  workspace.append(h('div', { class: 'toolbar' }, h('h2', { class: 'mono', text: blockInfo.label }), seg, searchBox, codesBtn), codes, list);
+  workspace.append(h('div', { class: 'toolbar' }, h('h2', { class: searching ? '' : 'mono', text: title }), seg, searchBox, codesBtn), ...[summary, codes, list].filter(Boolean));
 
   const rows = new Map();
-  const updateBlockCount = () => {
-    blockInfo.done = [...rows.values()].filter((r) => r.s.text).length;
-    blockInfo.reviewed = [...rows.values()].filter((r) => r.s.status === 'revisada').length;
-    paintBlocks();
+  // Apply a change to a string and move the sidebar counters of its block by the difference
+  // (search results come from many blocks, so counting the visible rows is not enough).
+  const counted = (s) => [s.text ? 1 : 0, s.status === 'revisada' ? 1 : 0];
+  const change = (row, fn) => {
+    const [d0, r0] = counted(row.s); fn(); const [d1, r1] = counted(row.s);
+    const b = blockById.get(row.s.block_id);
+    if (b && (d0 !== d1 || r0 !== r1)) { b.done += d1 - d0; b.reviewed += r1 - r0; paintBlocks(); }
   };
 
   for (const s of strings) {
     const row = { s, dirty: false };
     const field = can ? h('textarea', { rows: Math.min(8, 2 + (s.source.match(/\\n/g) || []).length), 'aria-label': t('ed.fieldLabel', { n: `${s.idx}` }), spellcheck: 'true', lang: route.lang }) : h('div', { class: 'readonly', lang: route.lang });
     const foot = h('div', { class: 'str-foot' });
-    const node = h('div', { class: 'str' }, h('div', { class: 'str-key' }, h('span', { text: `#${s.idx}` })), sourceNode(s.source, game.source_lang, can ? field : null), h('div', { class: 'tr-col' }, field, foot));
+    const key = h('div', { class: 'str-key' }, h('span', { text: `#${s.idx}` }),
+      searching ? h('a', { href: `#/g/${game.slug}/t/${route.lang}/${s.block_id}/${s.id}`, text: blockById.get(s.block_id)?.label || '' }) : null);
+    const node = h('div', { class: 'str' }, key, sourceNode(s.source, game.source_lang, can ? field : null), h('div', { class: 'tr-col' }, field, foot));
     Object.assign(row, { field, foot, node });
     if (can) {
       field.addEventListener('focus', () => node.classList.add('active'));
@@ -521,6 +552,12 @@ async function viewEditor(route) {
     paintValue(row); paintFoot(row);
   }
   applyFilter();
+  const target = route.focus && rows.get(route.focus);
+  if (target) {
+    target.node.scrollIntoView({ block: 'center' });
+    if (can) target.field.focus({ preventScroll: true });
+    else { target.node.classList.add('active'); setTimeout(() => target.node.classList.remove('active'), 2000); }
+  }
 
   function paintValue(row) {
     if (can) { if (!row.dirty && document.activeElement !== row.field) row.field.value = toField(row.s.text); }
@@ -532,7 +569,7 @@ async function viewEditor(route) {
     const miss = value ? missingTags(s.source, value.replace(/\n/g, '\\n')) : [];
     const left = h('span', { class: 'by' });
     if (row.saving) left.append(t('ed.saving'));
-    else if (row.error) left.append(h('span', { style: 'color:var(--bad)', text: row.error }), row.conflict ? h('button', { class: 'btn ghost sm', type: 'button', text: t('ed.keepMine'), onclick: () => save(row, true) }) : null);
+    else if (row.error) left.append(h('span', { style: 'color:var(--bad)', text: row.error }), ...(row.conflict ? [h('button', { class: 'btn ghost sm', type: 'button', text: t('ed.keepMine'), onclick: () => save(row, true) })] : []));
     else if (row.dirty) left.append(t('ed.unsaved'));
     else if (s.text) left.append(avatar(s.by, 'avatar sm'), `${who(s.by)} · ${ago(s.updated_at)}`);
     const acts = h('span', { class: 'acts' });
@@ -569,13 +606,13 @@ async function viewEditor(route) {
     const text = row.field.value;
     try {
       const r = await api('PUT', `/api/games/${slug}/strings/${row.s.id}/${encodeURIComponent(route.lang)}`, force ? { text } : { text, base: row.s.updated_at || null });
-      Object.assign(row.s, { text: r.text, status: r.status, updated_at: r.updated_at, by: r.by });
+      change(row, () => Object.assign(row.s, { text: r.text, status: r.status, updated_at: r.updated_at, by: r.by }));
     } catch (e) {
       row.dirty = true; row.error = e.message; row.conflict = e.status === 409;
-    } finally { row.saving = false; paintFoot(row); updateBlockCount(); }
+    } finally { row.saving = false; paintFoot(row); }
   }
   async function setReview(row, approved) {
-    try { const r = await api('POST', `/api/games/${slug}/strings/${row.s.id}/${encodeURIComponent(route.lang)}/review`, { approved }); row.s.status = r.status; paintFoot(row); updateBlockCount(); }
+    try { const r = await api('POST', `/api/games/${slug}/strings/${row.s.id}/${encodeURIComponent(route.lang)}/review`, { approved }); change(row, () => { row.s.status = r.status; }); paintFoot(row); }
     catch (e) { toast(e.message); }
   }
   async function toggleHistory(row) {
@@ -604,9 +641,9 @@ async function viewEditor(route) {
     if (ev.type === 'translation' && ev.lang === route.lang && rows.has(ev.id)) {
       const row = rows.get(ev.id);
       const mine = ev.by && S.me && ev.by.login === S.me.login;
-      Object.assign(row.s, { text: ev.text, status: ev.status, updated_at: ev.updated_at || row.s.updated_at, ...(ev.by ? { by: ev.by } : {}) });
+      change(row, () => Object.assign(row.s, { text: ev.text, status: ev.status, updated_at: ev.updated_at || row.s.updated_at, ...(ev.by ? { by: ev.by } : {}) }));
       if (row.dirty && !mine && ev.by) row.error = t('ed.changedBy', { who: who(ev.by) });
-      paintValue(row); paintFoot(row); updateBlockCount();
+      paintValue(row); paintFoot(row);
     }
     if (ev.type === 'progress') refreshLangProgress();
   });

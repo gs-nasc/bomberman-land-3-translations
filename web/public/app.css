@@ -186,6 +186,7 @@ textarea { resize: vertical; line-height: 1.55; }
 .empty { padding: 48px 20px; text-align: center; color: var(--muted); display: grid; gap: 10px; justify-items: center; }
 .empty h3 { color: var(--ink); font-size: 15px; }
 .notice { border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius); padding: 14px 18px; display: flex; gap: 14px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.workspace > .notice { margin-bottom: 16px; }
 
 /* editor */
 .editor { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); min-height: 70vh; }
@@ -195,7 +196,7 @@ textarea { resize: vertical; line-height: 1.55; }
   .sidebar { position: static; max-height: 260px; border-right: 0; border-bottom: 1px solid var(--line); }
   .toolbar { top: 56px; border-top-right-radius: 0; }
 }
-.sidebar-head { padding: 12px; border-bottom: 1px solid var(--line); }
+.sidebar-head { padding: 12px; border-bottom: 1px solid var(--line); display: grid; gap: 8px; }
 .sidebar-list { overflow-y: auto; flex: 1; }
 .block { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 8px; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line); background: none; padding: 10px 14px; }
 .block:hover { background: var(--subtle); }
@@ -213,6 +214,8 @@ textarea { resize: vertical; line-height: 1.55; }
 .str:last-child { border-bottom: 0; }
 @media (max-width: 680px) { .str { grid-template-columns: minmax(0, 1fr); } }
 .str.active { background: color-mix(in srgb, var(--accent-soft) 45%, transparent); }
+.search-summary { margin: 0 0 12px; }
+.str-key a { color: var(--accent); }
 .str-key { grid-column: 1 / -1; display: flex; gap: 10px; align-items: center; font-family: var(--mono); font-size: 11px; color: var(--muted); }
 .src { font-family: var(--jp); font-size: 14.5px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
 .src .tok { font-family: var(--mono); font-size: 11px; color: var(--accent); background: var(--accent-soft); border-radius: 4px; padding: 1px 4px; margin: 0 1px; }

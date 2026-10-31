@@ -47,10 +47,12 @@ const block = blocks.find((b) => b.n > 5);
 const { data: { strings } } = await call(admin, 'GET', `/api/games/${SLUG}/blocks/${block.id}?lang=pt`);
 const s = strings[0];
 
-// access to the text
-assert.equal((await call('', 'GET', `/api/games/${SLUG}/blocks/${block.id}?lang=pt`)).status, 401); ok('signed-out visitors cannot read the source text');
-assert.equal((await call(alice, 'GET', `/api/games/${SLUG}/blocks/${block.id}?lang=pt`)).status, 403); ok('non-members cannot read the source text');
+// reading is public, writing needs permission
+assert.equal((await call('', 'GET', `/api/games/${SLUG}/blocks/${block.id}?lang=pt`)).status, 200); ok('signed-out visitors read the text');
+assert.equal((await call(alice, 'GET', `/api/games/${SLUG}/blocks/${block.id}?lang=pt`)).status, 200); ok('non-members read the text');
+assert.equal((await call('', 'PUT', `/api/games/${SLUG}/strings/${s.id}/pt`, { text: 'x' })).status, 401); ok('signed-out visitors cannot translate');
 assert.equal((await call(alice, 'PUT', `/api/games/${SLUG}/strings/${s.id}/pt`, { text: 'x' })).status, 403); ok('non-members cannot translate');
+assert.equal((await call(alice, 'POST', `/api/games/${SLUG}/strings/${s.id}/pt/review`, { approved: true })).status, 403); ok('non-members cannot review');
 assert.equal((await call(admin, 'PUT', `/api/games/${SLUG}/strings/${s.id}/pt`, { text: 'x' }, { header: false })).status, 403); ok('writes without the page header are refused (CSRF)');
 
 // live updates
@@ -79,7 +81,6 @@ const s2 = strings[1];
 assert.equal((await call(alice, 'PUT', `/api/games/${SLUG}/strings/${s2.id}/pt`, { text: 'Tradução da Alice' })).status, 200); ok('alice translates pt');
 assert.equal((await call(alice, 'PUT', `/api/games/${SLUG}/strings/${s2.id}/es`, { text: 'no' })).status, 403); ok('alice cannot translate es');
 assert.equal((await call(alice, 'POST', `/api/games/${SLUG}/strings/${s2.id}/pt/review`, { approved: true })).status, 403); ok('a translator cannot review');
-assert.equal((await call(alice, 'GET', `/api/games/${SLUG}/blocks/${block.id}?lang=pt`)).status, 200); ok('members read the source text');
 
 // edit conflict
 const before = (await call(alice, 'GET', `/api/games/${SLUG}/blocks/${block.id}?lang=pt`)).data.strings[1];
@@ -89,6 +90,7 @@ assert.equal(conflict.status, 409); ok('stale edit is refused with 409 and who c
 assert.equal((await call(alice, 'PUT', `/api/games/${SLUG}/strings/${s2.id}/pt`, { text: 'Versão da Alice' })).status, 200); ok('saving without base overwrites on purpose');
 const hist = await call(alice, 'GET', `/api/games/${SLUG}/strings/${s2.id}/pt/history`);
 assert.ok(hist.data.history.length >= 3); ok('history keeps every version');
+assert.equal((await call('', 'GET', `/api/games/${SLUG}/strings/${s2.id}/pt/history`)).data.history.length, hist.data.history.length); ok('history is public too');
 
 // progress and coordinator-only routes
 const g = await call(bob, 'GET', `/api/games/${SLUG}`);
@@ -108,6 +110,31 @@ assert.equal(got.length, orig.length);
 const set = new Set(got); assert.ok(orig.every((r) => set.has(r))); ok(`export has the ${orig.length} original rows unchanged`);
 const translated = lines.filter((l) => l.split('\t')[10] === 'Olá!\\nTudo bem?{PAG}');
 assert.ok(translated.length >= 1); ok(`translation exported to ${translated.length} row(s), every copy of its table`);
+const ptCol = (body) => new Set(body.trim().split('\n').slice(1).map((l) => l.split('\t')[10]).filter(Boolean));
+assert.ok(ptCol(exp.data).has('Versão da Alice')); ok('full export includes unreviewed translations');
+const expRev = await call(admin, 'GET', `/api/games/${SLUG}/export?only=revisadas`);
+assert.equal(expRev.status, 200); assert.equal(expRev.data.trim().split('\n').length, lines.length);
+assert.deepEqual([...ptCol(expRev.data)], ['Olá!\\nTudo bem?{PAG}']); ok('reviewed-only export keeps every row but only reviewed text');
+
+// undoing a review sends the string back to "to review"
+assert.equal((await call(admin, 'POST', `/api/games/${SLUG}/strings/${s.id}/pt/review`, { approved: false })).data.status, 'traduzida');
+assert.equal((await call(admin, 'GET', `/api/games/${SLUG}/blocks/${block.id}?lang=pt`)).data.strings[0].status, 'traduzida'); ok('undo review returns the string to translated');
+await call(admin, 'POST', `/api/games/${SLUG}/strings/${s.id}/pt/review`, { approved: true });
+
+// search across every block
+const search = (who, q) => call(who, 'GET', `/api/games/${SLUG}/search?lang=pt&q=${encodeURIComponent(q)}`);
+assert.equal((await search('', 'x')).status, 200); assert.equal((await search(bob, 'x')).status, 200); ok('search is public');
+const byText = (await search(alice, 'tudo BEM')).data;
+assert.ok(byText.strings.some((r) => r.id === s.id && r.block_id === block.id && r.status === 'revisada')); ok('search finds translations, ignoring case');
+assert.ok((await search(alice, 'Olá!\nTudo')).data.strings.some((r) => r.id === s.id)); ok('a typed line break matches the stored \\n');
+const other = blocks.find((b) => b.id !== block.id && b.n > 3);
+const otherSrc = (await call(admin, 'GET', `/api/games/${SLUG}/blocks/${other.id}?lang=pt`)).data.strings.find((r) => r.source.length > 12);
+const bySource = (await search(alice, otherSrc.source.slice(0, 10))).data;
+assert.ok(bySource.strings.some((r) => r.id === otherSrc.id && r.block_id === other.id)); ok('search finds source text in other blocks');
+assert.equal((await search(alice, '%')).data.strings.length, 0); ok('% and _ are searched literally, not as wildcards');
+const many = (await search(alice, 'の')).data;
+assert.equal(many.strings.length, 200); assert.equal(many.truncated, true); ok('search stops at 200 results and says so');
+assert.deepEqual((await search(alice, '  ')).data, { strings: [], truncated: false }); ok('blank search returns nothing');
 
 // server messages follow the interface language (X-Lang, then Accept-Language)
 const errIn = async (headers) => (await (await fetch(`${BASE}/api/admin/users`, { headers: { Cookie: bob, ...headers } })).json()).error;

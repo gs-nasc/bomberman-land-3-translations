@@ -21,6 +21,7 @@ const PUBLIC_DIR = fileURLToPath(new URL('./public/', import.meta.url));
 const BASE_COLS = ['archive', 'entry', 'file', 'id', 'string_res', 'font_res', 'method', 'margin', 'text'];
 const CHUNK = 200;
 const ROLES = ['coordenador', 'tradutor', 'revisor'];
+const SEARCH_LIMIT = 200;
 
 const pool = new pg.Pool({ connectionString: env('DATABASE_URL', 'postgres://games:games@localhost:5432/games'), max: 10 });
 const q = (text, params) => pool.query(text, params);
@@ -126,7 +127,6 @@ async function access(user, game) {
     if (m.role === 'coordenador') a.coordinator = true; else a.langs[m.lang] = m.role;
   }
   a.manage = a.admin || a.coordinator;
-  a.seeText = a.manage || a.member;
   return a;
 }
 const canTranslate = (a, lang) => a.manage || !!a.langs[lang];
@@ -236,13 +236,13 @@ async function importTsv(game, text) {
   return { blocks: blocks.length, strings: blocks.reduce((a, b) => a + b.rows.length, 0) };
 }
 
-async function exportTsv(game) {
+async function exportTsv(game, { reviewedOnly = false } = {}) {
   const langs = (await q('select lang from game_langs where game_id = $1 order by lang', [game.id])).rows.map((r) => r.lang);
   const rows = (await q(`select s.id, s.idx, s.source, a.sid, a.archive, a.entry, a.file, a.font_res, a.method, a.margin
     from strings s join blocks b on b.id = s.block_id join block_aliases a on a.block_id = b.id
     where s.game_id = $1 order by b.position, a.sid, s.idx`, [game.id])).rows;
   const tr = new Map();
-  for (const t of (await q(`select t.string_id, t.lang, t.text from translations t join strings s on s.id = t.string_id where s.game_id = $1 and t.text <> ''`, [game.id])).rows) tr.set(`${t.string_id}|${t.lang}`, t.text);
+  for (const t of (await q(`select t.string_id, t.lang, t.text from translations t join strings s on s.id = t.string_id where s.game_id = $1 and t.text <> '' and ($2::boolean is false or t.status = 'revisada')`, [game.id, reviewedOnly])).rows) tr.set(`${t.string_id}|${t.lang}`, t.text);
   const clean = (s) => s.replace(/\t/g, ' ').replace(/\r?\n/g, '\\n');
   const out = [[...BASE_COLS, ...langs].join('\t')];
   for (const r of rows) out.push([r.archive, r.entry, r.file, r.idx, r.sid, r.font_res, r.method, r.margin, r.source, ...langs.map((l) => clean(tr.get(`${r.id}|${l}`) || ''))].join('\t'));
@@ -315,14 +315,28 @@ route('GET', '/api/games/:slug/blocks', async ({ user, url, p }) => {
   return { blocks: rows.map((r) => ({ id: r.id, label: r.label, scene: r.scene, n: +r.n, done: +r.done, reviewed: +r.reviewed })) };
 });
 
-route('GET', '/api/games/:slug/blocks/:id', async ({ user, url, p }) => {
-  const g = await gameBySlug(p.slug); const a = await access(user, g);
-  if (!a.seeText) fail(user ? 403 : 401, user ? 'O texto é visível para a equipe deste jogo. Peça para entrar na aba Equipe.' : 'Entre com o GitHub para ver o texto.');
-  const lang = url.searchParams.get('lang') || '';
-  const rows = (await q(`select s.id, s.idx, s.source, t.text, t.status, t.updated_at, u.login, u.name, u.avatar_url
-    from strings s left join translations t on t.string_id = s.id and t.lang = $3 left join users u on u.id = t.updated_by
-    where s.game_id = $1 and s.block_id = $2 order by s.idx`, [g.id, +p.id, lang])).rows;
-  return { strings: rows.map((r) => ({ id: r.id, idx: r.idx, source: r.source, text: r.text || '', status: r.text ? r.status : null, updated_at: r.updated_at, by: r.login ? { login: r.login, name: r.name, avatar_url: r.avatar_url } : null })) };
+const STRING_COLS = `s.id, s.idx, s.source, s.block_id, t.text, t.status, t.updated_at, u.login, u.name, u.avatar_url
+    from strings s left join translations t on t.string_id = s.id and t.lang = $2 left join users u on u.id = t.updated_by`;
+const stringRow = (r) => ({ id: r.id, idx: r.idx, source: r.source, block_id: r.block_id, text: r.text || '', status: r.text ? r.status : null, updated_at: r.updated_at,
+  by: r.login ? { login: r.login, name: r.name, avatar_url: r.avatar_url } : null });
+
+// Reading is public (text, search, history); only writes check permissions.
+route('GET', '/api/games/:slug/blocks/:id', async ({ url, p }) => {
+  const g = await gameBySlug(p.slug);
+  const rows = (await q(`select ${STRING_COLS} where s.game_id = $1 and s.block_id = $3 order by s.idx`, [g.id, url.searchParams.get('lang') || '', +p.id])).rows;
+  return { strings: rows.map(stringRow) };
+});
+
+// Search every block at once, in the source and in the translation of one language.
+route('GET', '/api/games/:slug/search', async ({ url, p }) => {
+  const g = await gameBySlug(p.slug);
+  const term = (url.searchParams.get('q') || '').trim().slice(0, 200);
+  if (!term) return { strings: [], truncated: false };
+  // stored text keeps line breaks as a literal \n, so a typed line break matches it too
+  const like = `%${term.replace(/[\\%_]/g, (c) => `\\${c}`).replace(/\r?\n/g, '\\\\n')}%`;
+  const rows = (await q(`select ${STRING_COLS} join blocks b on b.id = s.block_id
+    where s.game_id = $1 and (s.source ilike $3 or t.text ilike $3) order by b.position, s.idx limit ${SEARCH_LIMIT + 1}`, [g.id, url.searchParams.get('lang') || '', like])).rows;
+  return { strings: rows.slice(0, SEARCH_LIMIT).map(stringRow), truncated: rows.length > SEARCH_LIMIT };
 });
 
 route('PUT', '/api/games/:slug/strings/:id/:lang', async ({ user, req, p }) => {
@@ -361,9 +375,8 @@ route('POST', '/api/games/:slug/strings/:id/:lang/review', async ({ user, req, p
   return { status: row.status };
 });
 
-route('GET', '/api/games/:slug/strings/:id/:lang/history', async ({ user, p }) => {
-  const g = await gameBySlug(p.slug); const a = await access(user, g);
-  if (!a.seeText) fail(403, 'Só a equipe vê o histórico.');
+route('GET', '/api/games/:slug/strings/:id/:lang/history', async ({ p }) => {
+  const g = await gameBySlug(p.slug);
   return { history: (await q(`select h.text, h.status, h.created_at, u.login, u.name, u.avatar_url from translation_history h
     join strings s on s.id = h.string_id left join users u on u.id = h.user_id
     where h.string_id = $1 and h.lang = $2 and s.game_id = $3 order by h.created_at desc limit 30`, [+p.id, p.lang, g.id])).rows };
@@ -378,12 +391,13 @@ route('POST', '/api/games/:slug/import', async ({ user, req, p }) => {
   return r;
 });
 
-route('GET', '/api/games/:slug/export', async ({ user, p, res }) => {
+route('GET', '/api/games/:slug/export', async ({ user, url, p, res }) => {
   const g = await gameBySlug(p.slug); const a = await access(requireUser(user), g);
   if (!a.manage) fail(403, 'Só a coordenação exporta.');
-  const body = await exportTsv(g);
-  await log(g, user, 'exportado');
-  res.writeHead(200, { 'Content-Type': 'text/tab-separated-values; charset=utf-8', 'Content-Disposition': `attachment; filename="${g.slug}-traducoes.tsv"` });
+  const reviewedOnly = url.searchParams.get('only') === 'revisadas';
+  const body = await exportTsv(g, { reviewedOnly });
+  await log(g, user, 'exportado', null, { reviewedOnly });
+  res.writeHead(200, { 'Content-Type': 'text/tab-separated-values; charset=utf-8', 'Content-Disposition': `attachment; filename="${g.slug}-traducoes${reviewedOnly ? '-revisadas' : ''}.tsv"` });
   res.end(body);
   return undefined;
 });
