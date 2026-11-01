@@ -163,12 +163,16 @@ function openStream(req, res, slug) {
 
 async function langStats(gameId) {
   const total = +(await one('select count(*) n from strings where game_id = $1', [gameId])).n;
-  const langs = (await q(`select gl.lang,
-      count(t.string_id) filter (where t.text <> '') as done,
-      count(t.string_id) filter (where t.status = 'revisada') as reviewed
+  // count per language first, then attach to the game's languages (a correlated subquery here
+  // rescanned every string for every translation)
+  const langs = (await q(`select gl.lang, coalesce(c.done, 0) as done, coalesce(c.reviewed, 0) as reviewed
     from game_langs gl
-    left join translations t on t.lang = gl.lang and t.string_id in (select id from strings where game_id = gl.game_id)
-    where gl.game_id = $1 group by gl.lang order by gl.lang`, [gameId])).rows.map((r) => ({ lang: r.lang, done: +r.done, reviewed: +r.reviewed }));
+    left join (select t.lang,
+        count(*) filter (where t.text <> '') as done,
+        count(*) filter (where t.status = 'revisada') as reviewed
+      from translations t join strings s on s.id = t.string_id
+      where s.game_id = $1 group by t.lang) c on c.lang = gl.lang
+    where gl.game_id = $1 order by gl.lang`, [gameId])).rows.map((r) => ({ lang: r.lang, done: +r.done, reviewed: +r.reviewed }));
   return { total, langs };
 }
 
