@@ -52,7 +52,7 @@ def load_resources(dig_root):
     """Map resource ID -> (kind, path) for every small subfile ('font', 'str' or 'other')."""
     res = {}
     for arc in ARCS:
-        for row in open(os.path.join(dig_root, arc, 'index.tsv')).read().splitlines()[1:]:
+        for row in open(os.path.join(dig_root, arc, 'index.tsv'), encoding='utf-8').read().splitlines()[1:]:
             e, _, _, _, _, k, t, size, _ = map(int, row.split('\t'))
             if size > 200000:
                 continue

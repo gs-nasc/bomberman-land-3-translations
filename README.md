@@ -55,7 +55,7 @@ Os detalhes técnicos (formatos, endereços no executável, algoritmo de compres
 
 - Python 3.10 ou mais novo
 - `7z` (p7zip) para abrir o ISO
-- As fontes **Noto Sans** e **Noto Sans CJK** (no Debian/Ubuntu: `sudo apt install fonts-noto-core fonts-noto-cjk`)
+- As fontes **Noto Sans** e **Noto Sans CJK** (no Debian/Ubuntu: `sudo apt install fonts-noto-core fonts-noto-cjk`); no Windows, veja abaixo
 - [PCSX2](https://pcsx2.net) para jogar e testar
 - Uma cópia do jogo: `Bomberman Land 3 (Japan).bin` e `.cue`
 
@@ -63,6 +63,33 @@ Os detalhes técnicos (formatos, endereços no executável, algoritmo de compres
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
+
+### No Windows
+
+Funciona no PowerShell, sem WSL. Diferenças:
+
+- Python do [python.org](https://www.python.org) ou da Microsoft Store; use `py` no lugar de `python3`.
+- [7-Zip](https://www.7-zip.org) instalado; o `7z.exe` fica em `C:\Program Files\7-Zip\` (ponha no PATH ou
+  chame pelo caminho completo).
+- Fontes: sem o Noto instalado, o `encode.py` usa a **Arial Bold** e a **Yu Gothic Bold** do Windows. Para
+  ficar igual ao Linux, instale o Noto Sans e o Noto Sans CJK (clique com o botão direito → *Instalar*); o
+  `encode.py` acha sozinho. Ele mostra no início do log quais fontes usou.
+- Os comandos deste README em PowerShell:
+
+```powershell
+py -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python tools\bin2iso.py "Bomberman Land 3 (Japan).bin" game.iso
+& "C:\Program Files\7-Zip\7z.exe" x game.iso -oiso
+foreach ($d in 'CDDATA','CDDATA0','CDDATA1','CDDATA2','CDDATA4','CDDATA5') {
+  .venv\Scripts\python tools\dig_extract.py iso\$d.DIG dig\$d
+}
+.venv\Scripts\python tools\encode.py dig iso game.iso traduzido.tsv saida --lang pt
+.venv\Scripts\python tools\verify.py dig game.iso "saida\Bomberman Land 3 (pt).iso" traduzido.tsv --lang pt
+```
+
+Se mover ou renomear a pasta do projeto, apague o `.venv` e crie de novo: ele guarda o caminho antigo. E não
+reaproveite no Windows um `.venv` criado no Linux/WSL (nem o contrário).
 
 ## 1. Preparar o disco
 

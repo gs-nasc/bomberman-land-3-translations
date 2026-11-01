@@ -115,7 +115,7 @@ def main(dig_root, elf_path, msg_path, dump):
     from fontbind import bind  # fontbind imports the parsers above
 
     res, fonts, binding = bind(dig_root, elf_path, msg_path)
-    with open(dump, 'w') as out:
+    with open(dump, 'w', encoding='utf-8', newline='\n') as out:
         out.write('archive\tentry\tfile\tid\tstring_res\tfont_res\tmethod\tmargin\ttext\n')
         for sid in sorted(binding):
             fid, method, margin = binding[sid]

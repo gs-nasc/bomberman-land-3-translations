@@ -10,7 +10,8 @@ Per font touched by a translation:
   * every table bound to that font (TSV `font_res`) is re-encoded; untranslated strings keep their
     original codes byte for byte;
   * characters already in the font reuse their glyph; others get new glyphs drawn with the first
-    --ttf of the chain that has them (default: Noto Sans Bold, then Noto Sans CJK Black),
+    --ttf of the chain that has them (default: Noto Sans Bold, then Noto Sans CJK Black; Arial Bold
+    and Yu Gothic Bold on Windows without Noto),
     placed in slots no bound table uses any more (never 0-12: the code prints digits from there),
     then appended; --no-reuse only appends;
   * the texture is rebuilt with full pages; growing past the original page count is reported
@@ -39,9 +40,36 @@ PROTECTED = 13          # glyphs 0..12 ('　＋ー０..９') are addressed direc
 TAG_TO_CODE = {v: k for k, v in CONTROL.items()}
 TOKEN = re.compile(r'\\n|\{[^}]*\}|.', re.S)
 # Noto Sans covers Latin (incl. Polish, Czech, Turkish, Romanian...), Greek and Cyrillic; Noto Sans
-# CJK catches any new Japanese character a translator may add.
-DEFAULT_TTFS = ['/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf',
-                '/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc']
+# CJK catches any new Japanese character a translator may add. Each slot takes the first file found
+# (Linux, then Windows/macOS font folders); Windows' Arial and Yu Gothic stand in when Noto is missing.
+DEFAULT_TTFS = [
+    ['/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf', 'NotoSans-Bold.ttf', 'arialbd.ttf'],
+    ['/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc', 'NotoSansCJK-Black.ttc',
+     'NotoSansCJKjp-Black.otf', 'NotoSansJP-Black.ttf', 'YuGothB.ttc', 'msgothic.ttc'],
+]
+
+
+def font_dirs():
+    dirs = [os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts')] if os.name == 'nt' else []
+    if os.environ.get('LOCALAPPDATA'):
+        dirs.append(os.path.join(os.environ['LOCALAPPDATA'], 'Microsoft', 'Windows', 'Fonts'))
+    dirs += ['/Library/Fonts', os.path.expanduser('~/Library/Fonts'), os.path.expanduser('~/.local/share/fonts')]
+    return dirs
+
+
+def default_ttfs():
+    """First existing file of each DEFAULT_TTFS slot (bare names are looked up in the font folders)."""
+    found = []
+    for slot in DEFAULT_TTFS:
+        for name in slot:
+            paths = [name] if os.path.isabs(name) else [os.path.join(d, name) for d in font_dirs()]
+            hit = next((p for p in paths if os.path.isfile(p)), None)
+            if hit:
+                found.append(hit)
+                break
+    if not found:
+        raise EncodeError('nenhuma fonte padrão encontrada (instale Noto Sans ou use --ttf)')
+    return found
 
 
 class EncodeError(Exception):
@@ -273,7 +301,7 @@ def res_path(dig_root, rid):
     """Resource ID -> (archive, entry, subfile path) using the extraction's index.tsv files."""
     e, typ = rid >> 16, rid & 0xffff
     arc = ARCS[typ >> 12]
-    for row in open(os.path.join(dig_root, arc, 'index.tsv')).read().splitlines()[1:]:
+    for row in open(os.path.join(dig_root, arc, 'index.tsv'), encoding='utf-8').read().splitlines()[1:]:
         f = row.split('\t')
         if int(f[0]) == e and int(f[6]) == typ:
             return arc, e, int(f[5]), os.path.join(dig_root, arc, f'e{e:04d}', f's{int(f[5]):02d}_t{typ}.bin')
@@ -298,6 +326,9 @@ def main(argv=None):
     def log(msg):
         print(msg)
         log_lines.append(msg)
+
+    ttfs = a.ttf or default_ttfs()
+    log('fontes para letras novas: ' + ', '.join(ttfs))
 
     lines = open(a.tsv, encoding='utf-8').read().splitlines()
     head = lines[0].split('\t')
@@ -343,7 +374,7 @@ def main(argv=None):
             work.append((originals, tokens))
         try:
             new_glyphs, new_tex, encoded = rebuild_font(glyph_bytes, open(tex_path, 'rb').read(), work,
-                                                        a.ttf or DEFAULT_TTFS, not a.no_reuse, log)
+                                                        ttfs, not a.no_reuse, log)
         except EncodeError as ex:
             skipped += bound
             log(f'    PULADA: {ex}')
@@ -380,7 +411,7 @@ def main(argv=None):
     patch_iso(a.iso, out_iso, new_digs, log)
     if skipped:
         log(f'tabelas não reinseridas: {", ".join(f"{s:08x}" for s in skipped)}')
-    open(os.path.join(a.out_dir, 'encode.log'), 'w').write('\n'.join(log_lines) + '\n')
+    open(os.path.join(a.out_dir, 'encode.log'), 'w', encoding='utf-8').write('\n'.join(log_lines) + '\n')
     return 1 if skipped else 0
 
 

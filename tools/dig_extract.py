@@ -41,7 +41,7 @@ def main(path, out):
     d = open(path, 'rb').read()
     os.makedirs(out, exist_ok=True)
     entries = read_header(d)
-    with open(os.path.join(out, 'index.tsv'), 'w') as idx:
+    with open(os.path.join(out, 'index.tsv'), 'w', encoding='utf-8') as idx:
         idx.write('entry\tstart\tsize_sec\tsubs\tcomp_sec\tsub\ttype\tsize\toffset\n')
         for n, rec in enumerate(entries):
             data = load_entry(d, rec)
