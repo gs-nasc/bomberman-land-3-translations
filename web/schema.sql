@@ -27,6 +27,8 @@ create table if not exists games (
   source_lang text not null default 'ja',
   created_at  timestamptz not null default now()
 );
+-- which desktop-app patcher builds this game (server.js PATCHERS); null = not offered in the app
+alter table games add column if not exists patcher text;
 
 create table if not exists game_langs (
   game_id     int not null references games(id) on delete cascade,

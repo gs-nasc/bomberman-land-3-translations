@@ -24,6 +24,9 @@ const BASE_COLS = ['archive', 'entry', 'file', 'id', 'string_res', 'font_res', '
 const CHUNK = 200;
 const ROLES = ['coordenador', 'tradutor', 'revisor'];
 const SEARCH_LIMIT = 200;
+// Patchers the desktop app ships (desktop/engine/patchers). A game with one set is listed in the app,
+// which downloads its translation and builds the translated disc from the player's own copy.
+const PATCHERS = { bml3: { kind: 'ps2-iso', name: 'Bomberman Land 3 (PS2, SLPM-62643)' } };
 
 const pool = new pg.Pool({ connectionString: env('DATABASE_URL', 'postgres://games:games@localhost:5432/games'), max: 10 });
 const q = (text, params) => pool.query(text, params);
@@ -376,8 +379,9 @@ async function importTsv(game, text) {
   return { blocks: blocks.length, strings: blocks.reduce((a, b) => a + b.rows.length, 0) };
 }
 
-async function exportTsv(game, { reviewedOnly = false } = {}) {
-  const langs = (await q('select lang from game_langs where game_id = $1 order by lang', [game.id])).rows.map((r) => r.lang);
+async function exportTsv(game, { reviewedOnly = false, only = null } = {}) {
+  const langs = (await q('select lang from game_langs where game_id = $1 order by lang', [game.id])).rows.map((r) => r.lang)
+    .filter((l) => !only || only.includes(l));
   const rows = (await q(`select s.id, s.idx, s.source, a.sid, a.archive, a.entry, a.file, a.font_res, a.method, a.margin
     from strings s join blocks b on b.id = s.block_id join block_aliases a on a.block_id = b.id
     where s.game_id = $1 order by b.position, a.sid, s.idx`, [game.id])).rows;
@@ -423,7 +427,8 @@ route('GET', '/api/games/:slug', async ({ user, p }) => {
   const a = await access(user, g);
   const s = await langStats(g.id);
   const ai = a.manage ? { ready: !!(await aiSettings(g.id)).api_key, job: jobView(aiJobs.get(g.id)) } : null;
-  return { game: { slug: g.slug, name: g.name, platform: g.platform, source_lang: g.source_lang }, ...s, access: a, ai,
+  const patchers = a.manage ? Object.entries(PATCHERS).map(([id, v]) => ({ id, ...v })) : undefined;
+  return { game: { slug: g.slug, name: g.name, platform: g.platform, source_lang: g.source_lang, patcher: g.patcher }, ...s, access: a, ai, patchers,
     blocks: +(await one('select count(*) n from blocks where game_id = $1', [g.id])).n };
 });
 
@@ -595,6 +600,43 @@ const aiManager = async (user, slug) => {
   if (!a.manage) fail(403, 'Só a coordenação usa a tradução automática.');
   return g;
 };
+
+route('PUT', '/api/games/:slug/patcher', async ({ user, req, p }) => {
+  const g = await gameBySlug(p.slug);
+  if (!(await access(requireUser(user), g)).manage) fail(403, 'Só a coordenação publica no aplicativo.');
+  const b = await readJson(req);
+  const id = b.patcher || null;
+  if (id && !PATCHERS[id]) fail(400, 'Aplicador desconhecido.');
+  await q('update games set patcher = $1 where id = $2', [id, g.id]);
+  await log(g, user, id ? 'app_publicado' : 'app_removido');
+  return { patcher: id };
+});
+
+// ---------------------------------------------------------------- desktop app (public, read-only)
+// No login: the app only reads the games offered in it and one language's text at a time. "estavel"
+// carries the reviewed strings only, "previa" every translation (drafts and Gemini included).
+
+route('GET', '/api/releases', async () => {
+  const games = (await q('select * from games where patcher is not null order by name')).rows;
+  const out = [];
+  for (const g of games) {
+    out.push({ slug: g.slug, name: g.name, platform: g.platform, source_lang: g.source_lang,
+      patcher: { id: g.patcher, kind: PATCHERS[g.patcher]?.kind || '' }, ...await langStats(g.id) });
+  }
+  return { games: out };
+});
+
+route('GET', '/api/releases/:slug/:lang', async ({ url, p, res }) => {
+  const g = await gameBySlug(p.slug);
+  if (!g.patcher) fail(404, 'Projeto não encontrado.');
+  const lang = decodeURIComponent(p.lang);
+  if (!(await one('select 1 from game_langs where game_id = $1 and lang = $2', [g.id, lang]))) fail(404, 'Idioma não existe neste projeto.');
+  const preview = url.searchParams.get('canal') === 'previa';
+  const body = await exportTsv(g, { reviewedOnly: !preview, only: [lang] });
+  res.writeHead(200, { 'Content-Type': 'text/tab-separated-values; charset=utf-8', 'Cache-Control': 'no-cache' });
+  res.end(body);
+  return undefined;
+});
 
 route('GET', '/api/games/:slug/ai', async ({ user, p }) => {
   const g = await aiManager(user, p.slug);
@@ -774,6 +816,8 @@ const server = createServer(async (req, res) => {
     if (url.pathname === '/auth/dev' && DEV_LOGIN) return await devLogin(req, res, url);
     if (url.pathname === '/auth/logout' && req.method === 'POST') return await logout(req, res);
     if (url.pathname.startsWith('/api/')) {
+      // the desktop app's page is served from its own origin (tauri.localhost)
+      if (url.pathname.startsWith('/api/releases')) res.setHeader('Access-Control-Allow-Origin', '*');
       // state-changing calls must come from our own page (SameSite cookie + this header)
       if (req.method !== 'GET' && req.headers['x-requested-with'] !== 'glifo') fail(403, 'Pedido recusado.');
       for (const r of routes) {

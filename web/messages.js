@@ -24,6 +24,8 @@ const M = {
   'Só revisores deste idioma aprovam traduções.': { en: 'Only this language\'s reviewers can approve translations.', es: 'Solo los revisores de este idioma aprueban traducciones.', ja: '翻訳を承認できるのはこの言語のレビュアーのみです。' },
   'Não há tradução para revisar.': { en: 'There is no translation to review.', es: 'No hay traducción para revisar.', ja: 'レビューする翻訳がありません。' },
   'Só a coordenação importa texto.': { en: 'Only coordinators can import text.', es: 'Solo la coordinación importa texto.', ja: 'テキストを取り込めるのはコーディネーターのみです。' },
+  'Só a coordenação publica no aplicativo.': { en: 'Only coordinators can publish to the app.', es: 'Solo la coordinación publica en la aplicación.', ja: 'アプリに公開できるのはコーディネーターのみです。' },
+  'Aplicador desconhecido.': { en: 'Unknown patcher.', es: 'Aplicador desconocido.', ja: '不明なパッチャーです。' },
   'Só a coordenação exporta.': { en: 'Only coordinators can export.', es: 'Solo la coordinación exporta.', ja: '書き出しできるのはコーディネーターのみです。' },
   'Escolha pelo menos um idioma.': { en: 'Choose at least one language.', es: 'Elige al menos un idioma.', ja: '言語を1つ以上選んでください。' },
   'Você já tem um pedido aguardando resposta.': { en: 'You already have a request waiting for an answer.', es: 'Ya tienes una solicitud esperando respuesta.', ja: '返答待ちの申請が既にあります。' },

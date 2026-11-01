@@ -117,6 +117,25 @@ const expRev = await call(admin, 'GET', `/api/games/${SLUG}/export?only=revisada
 assert.equal(expRev.status, 200); assert.equal(expRev.data.trim().split('\n').length, lines.length);
 assert.deepEqual([...ptCol(expRev.data)], ['Olá!\\nTudo bem?{PAG}']); ok('reviewed-only export keeps every row but only reviewed text');
 
+// desktop app: a game is listed only once the coordination picks its patcher; anyone reads one language
+assert.ok(!(await call('', 'GET', '/api/releases')).data.games.some((x) => x.slug === SLUG)); ok('a game without a patcher is not in the app');
+assert.equal((await call('', 'GET', `/api/releases/${SLUG}/pt`)).status, 404); ok('its text is not offered either');
+assert.equal((await call(alice, 'PUT', `/api/games/${SLUG}/patcher`, { patcher: 'bml3' })).status, 403); ok('only coordination publishes to the app');
+assert.equal((await call(admin, 'PUT', `/api/games/${SLUG}/patcher`, { patcher: 'nope' })).status, 400); ok('an unknown patcher is refused');
+assert.equal((await call(admin, 'PUT', `/api/games/${SLUG}/patcher`, { patcher: 'bml3' })).data.patcher, 'bml3');
+const rel = await fetch(`${BASE}/api/releases`);
+assert.equal(rel.headers.get('access-control-allow-origin'), '*'); ok('releases can be read from the app page (CORS)');
+const relGame = (await rel.json()).games.find((x) => x.slug === SLUG);
+assert.deepEqual(relGame.patcher, { id: 'bml3', kind: 'ps2-iso' }); assert.equal(relGame.langs.find((l) => l.lang === 'pt').reviewed, 1); ok('the app lists the game with its patcher and progress');
+const stable = (await call('', 'GET', `/api/releases/${SLUG}/pt`)).data;
+assert.deepEqual(stable.split('\n')[0].split('\t').slice(9), ['pt']); ok('a release carries only the chosen language');
+const relCol = (body) => new Set(body.trim().split('\n').slice(1).map((l) => l.split('\t')[9]).filter(Boolean));
+assert.deepEqual([...relCol(stable)], ['Olá!\\nTudo bem?{PAG}']); ok('the stable channel has only reviewed text');
+assert.ok(relCol((await call('', 'GET', `/api/releases/${SLUG}/pt?canal=previa`)).data).has('Versão da Alice')); ok('the preview channel has every translation');
+assert.equal((await call('', 'GET', `/api/releases/${SLUG}/xx`)).status, 404); ok('a language outside the project is not found');
+await call(admin, 'PUT', `/api/games/${SLUG}/patcher`, { patcher: null });
+assert.ok(!(await call('', 'GET', '/api/releases')).data.games.some((x) => x.slug === SLUG)); ok('removing the patcher takes the game out of the app');
+
 // undoing a review sends the string back to "to review"
 assert.equal((await call(admin, 'POST', `/api/games/${SLUG}/strings/${s.id}/pt/review`, { approved: false })).data.status, 'traduzida');
 assert.equal((await call(admin, 'GET', `/api/games/${SLUG}/blocks/${block.id}?lang=pt`)).data.strings[0].status, 'traduzida'); ok('undo review returns the string to translated');

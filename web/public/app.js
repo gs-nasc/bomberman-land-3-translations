@@ -388,7 +388,19 @@ async function tabSettings(body, data) {
     h('div', { class: 'row' },
       h('a', { class: 'btn primary', href: `/api/games/${slug}/export`, download: `${game.slug}-traducoes.tsv`, text: t('set.downloadAll') }),
       h('a', { class: 'btn', href: `/api/games/${slug}/export?only=revisadas`, download: `${game.slug}-traducoes-revisadas.tsv`, text: t('set.downloadReviewed') }))));
-  body.replaceChildren(h('div', { class: 'grid' }, langs, imp, catPanel, exp, await aiPanel(data)));
+
+  // Desktop app: the patcher that turns the player's own disc into the translated one.
+  const pst = h('p', { class: 'status', role: 'status' });
+  const psel = h('select', { class: 'grow', 'aria-label': t('set.app') }, h('option', { value: '', text: t('set.appOff') }),
+    (data.patchers || []).map((x) => h('option', { value: x.id, text: x.name })));
+  psel.value = game.patcher || '';
+  const appPanel = h('div', { class: 'panel' }, h('div', { class: 'panel-head' }, h('h2', { text: t('set.app') })), h('div', { class: 'panel-body' },
+    h('p', { class: 'muted small', text: t('set.appLead') }),
+    h('div', { class: 'row' }, psel, h('button', { class: 'btn', type: 'button', text: t('set.appSave'), onclick: async () => {
+      try { await api('PUT', `/api/games/${slug}/patcher`, { patcher: psel.value || null }); pst.textContent = t(psel.value ? 'set.appOn' : 'set.appRemoved'); pst.className = 'status ok'; }
+      catch (err) { pst.textContent = err.message; pst.className = 'status bad'; }
+    } })), pst));
+  body.replaceChildren(h('div', { class: 'grid' }, langs, imp, catPanel, exp, appPanel, await aiPanel(data)));
 }
 
 // Machine translation (Gemini): the coordination's key, model and instructions, plus a run over the
