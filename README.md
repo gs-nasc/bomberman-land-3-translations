@@ -215,10 +215,29 @@ O **Glifo** (código em `web/`) é onde a equipe traduz pelo navegador:
   atualização ao vivo quando outra pessoa salva;
 - pedido para entrar na equipe e painel de administração;
 - a coordenação importa o `dialogos_jp.tsv` e exporta o TSV com uma coluna por idioma para o `encode.py`;
+- tradução automática com o Gemini (veja abaixo);
 - interface em português, inglês, espanhol e japonês (detecta o navegador, troca no topo da página;
   textos em `web/public/i18n.js` e mensagens do servidor em `web/messages.js`).
 
 O texto original só aparece para quem faz parte da equipe do jogo.
+
+#### Tradução automática (Gemini)
+
+A coordenação cola a chave da API do Gemini ([aistudio.google.com/apikey](https://aistudio.google.com/apikey))
+em **Configurações → Tradução automática**, junto com as instruções (tom, glossário, nomes fixos). Depois:
+
+- **Configurações → Traduzir vazias**: traduz as strings vazias de um idioma, com um máximo por rodada
+  (comece com umas 50 para testar as instruções);
+- **no editor, "Traduzir vazias com Gemini"**: traduz só as vazias daquele bloco.
+
+As frases vão em lotes, na ordem do jogo. As regras dos códigos `{…}` e do `\n` vão sempre junto
+(`web/ai.js`), e uma resposta com códigos diferentes do original (fora `{PAG}` e `\n`) é descartada; o motivo
+aparece no painel. O que passa é salvo como **Gemini**, com status *traduzida*: aparece em "Para revisar"
+e só entra no export de revisadas depois que um revisor aprova. Nunca sobrescreve uma string já traduzida,
+e frases repetidas são traduzidas uma vez e preenchem as cópias.
+
+A chave fica guardada no banco (tabela `game_ai`) e nunca volta para o navegador. Só a coordenação vê e usa.
+Um job por jogo de cada vez; se o servidor reiniciar no meio, é só rodar de novo (ele continua pelas vazias).
 
 Rodar localmente (precisa de um Postgres):
 

@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { langOf, tr } from './messages.js';
 import { buildIndex, copiesOf, parseCategories, pickSuggestions, similarTo } from './sources.js';
+import { AiError, DEFAULT_MODEL, DEFAULT_PROMPT, batches, buildRequest, codeProblem, generate, parseResponse } from './ai.js';
 
 const env = (k, d) => process.env[k] ?? d;
 const PORT = +env('PORT', 3000);
@@ -209,6 +210,90 @@ async function differingCopies(lang, ids, text) {
   return +(await one('select count(*) n from translations where string_id = any($1::int[]) and lang = $2 and text <> $3', [ids, lang, text])).n;
 }
 
+// ---------------------------------------------------------------- machine translation (Gemini)
+
+// Translations made by the model are saved as 'traduzida' by this account, so they show up as
+// "Gemini" in the editor and wait for a reviewer like any other. It has no GitHub id, so nobody signs in as it.
+let botPromise = null;
+const botUser = () => (botPromise ??= one(`insert into users (github_id, login, name) values (-1, 'gemini', 'Gemini')
+  on conflict (github_id) do update set login = excluded.login returning *`).catch((e) => { botPromise = null; throw e; }));
+
+const aiJobs = new Map(); // game id -> job (one at a time per game; lost on restart, rerun picks up what is still empty)
+const MAX_RETRIES = 5;
+const sleep = (ms, signal) => new Promise((resolve) => { const tm = setTimeout(resolve, ms); signal.addEventListener('abort', () => { clearTimeout(tm); resolve(); }, { once: true }); });
+const jobView = (j) => j && { lang: j.lang, block_id: j.blockId, status: j.status, total: j.total, done: j.done, written: j.written, rejected: j.rejected,
+  problems: j.problems.slice(-10), error: j.error, by: j.by, started_at: j.startedAt, finished_at: j.finishedAt };
+const announce = (g, j) => broadcast(g.slug, { type: 'ai', job: jobView(j) });
+
+async function aiSettings(gameId) {
+  return (await one('select api_key, model, prompt from game_ai where game_id = $1', [gameId])) || { api_key: '', model: '', prompt: '' };
+}
+
+// Empty strings of one language (whole game or one block), one per distinct source: the copies are
+// filled by writeCopies, like a normal save. limit = 0 takes all of them.
+async function pendingStrings(game, lang, blockId, limit) {
+  const rows = (await q(`select s.id, s.idx, s.source, b.label from strings s join blocks b on b.id = s.block_id
+    left join translations t on t.string_id = s.id and t.lang = $2
+    where s.game_id = $1 and t.string_id is null and ($3::int is null or s.block_id = $3) order by b.position, s.idx`, [game.id, lang, blockId])).rows;
+  const idx = await sourceIndex(game.id), seen = new Set(), out = [];
+  for (const r of rows) {
+    if (!idx.byId.get(r.id)?.norm || seen.has(r.source)) continue;
+    seen.add(r.source); out.push(r);
+    if (limit && out.length >= limit) break;
+  }
+  return out;
+}
+
+async function runAiJob(game, job, settings) {
+  const queue = batches(job.items);
+  let retries = 0;
+  try {
+    const bot = await botUser();
+    const idx = await sourceIndex(game.id);
+    while (queue.length && !job.abort.signal.aborted) {
+      const batch = queue.shift();
+      let answer;
+      try {
+        answer = parseResponse(await generate({ key: settings.api_key, model: settings.model, body: buildRequest(settings.prompt, job.lang, batch), signal: job.abort.signal }), batch.length);
+        retries = 0;
+      } catch (e) {
+        if (job.abort.signal.aborted) break;
+        if (!(e instanceof AiError) || e.fatal) throw e;
+        job.problems.push(batch.length === 1 && !e.retryAfter ? `${batch[0].label} #${batch[0].idx}: ${e.message}` : e.message);
+        if (!e.retryAfter) {
+          // a bad answer is retried in halves, down to the one string that the model can't handle
+          if (batch.length > 1) queue.unshift(batch.slice(0, batch.length >> 1), batch.slice(batch.length >> 1));
+          else { job.done++; job.rejected++; }
+        } else {
+          // quota or overload: wait and try the same batch again, a few times in a row at most
+          if (++retries > MAX_RETRIES) throw e;
+          queue.unshift(batch);
+          await sleep(e.retryAfter * 1000, job.abort.signal);
+        }
+        announce(game, job);
+        continue;
+      }
+      for (const [i, it] of batch.entries()) {
+        const text = answer.get(i);
+        const problem = text === undefined ? 'sem resposta' : codeProblem(it.source, text);
+        job.done++;
+        if (problem) { job.rejected++; job.problems.push(`${it.label} #${it.idx}: ${problem}`); continue; }
+        // only empty strings: a person may have translated it while the job was running
+        job.written += (await writeCopies(game, bot, job.lang, [it.id, ...copiesOf(idx, it.id)], text, false)).length ? 1 : 0;
+      }
+      broadcast(game.slug, { type: 'progress' });
+      announce(game, job);
+    }
+    job.status = job.abort.signal.aborted ? 'parado' : 'concluido';
+  } catch (e) {
+    job.status = 'erro'; job.error = e instanceof AiError ? e.message : 'Erro no servidor.';
+    if (!(e instanceof AiError)) console.error(e);
+  }
+  job.finishedAt = new Date().toISOString();
+  announce(game, job);
+  await log(game, job.user, 'ia_traducao', job.lang, { written: job.written, rejected: job.rejected, status: job.status }).catch(() => {});
+}
+
 async function publicUser(u) { return u && { id: u.id, login: u.login, name: u.name, avatar_url: u.avatar_url, is_admin: u.is_admin }; }
 
 // ---------------------------------------------------------------- import / export
@@ -322,7 +407,8 @@ route('GET', '/api/games/:slug', async ({ user, p }) => {
   const g = await gameBySlug(p.slug);
   const a = await access(user, g);
   const s = await langStats(g.id);
-  return { game: { slug: g.slug, name: g.name, platform: g.platform, source_lang: g.source_lang }, ...s, access: a,
+  const ai = a.manage ? { ready: !!(await aiSettings(g.id)).api_key, job: jobView(aiJobs.get(g.id)) } : null;
+  return { game: { slug: g.slug, name: g.name, platform: g.platform, source_lang: g.source_lang }, ...s, access: a, ai,
     blocks: +(await one('select count(*) n from blocks where game_id = $1', [g.id])).n };
 });
 
@@ -486,6 +572,59 @@ route('GET', '/api/games/:slug/export', async ({ user, url, p, res }) => {
   res.writeHead(200, { 'Content-Type': 'text/tab-separated-values; charset=utf-8', 'Content-Disposition': `attachment; filename="${g.slug}-traducoes${reviewedOnly ? '-revisadas' : ''}.tsv"` });
   res.end(body);
   return undefined;
+});
+
+// Gemini settings and jobs: coordination only (the key is theirs, so are the costs).
+const aiManager = async (user, slug) => {
+  const g = await gameBySlug(slug); const a = await access(requireUser(user), g);
+  if (!a.manage) fail(403, 'Só a coordenação usa a tradução automática.');
+  return g;
+};
+
+route('GET', '/api/games/:slug/ai', async ({ user, p }) => {
+  const g = await aiManager(user, p.slug);
+  const s = await aiSettings(g.id);
+  return { has_key: !!s.api_key, key_tail: s.api_key.slice(-4), model: s.model || DEFAULT_MODEL, prompt: s.prompt || DEFAULT_PROMPT,
+    default_model: DEFAULT_MODEL, default_prompt: DEFAULT_PROMPT, job: jobView(aiJobs.get(g.id)) };
+});
+
+route('PUT', '/api/games/:slug/ai', async ({ user, req, p }) => {
+  const g = await aiManager(user, p.slug);
+  const b = await readJson(req);
+  const cur = await aiSettings(g.id);
+  const key = b.clear_key ? '' : String(b.api_key || '').trim() || cur.api_key;
+  const model = String(b.model ?? cur.model).trim().replace(/^models\//, '').slice(0, 80);
+  if (model && !/^[\w.-]+$/.test(model)) fail(400, 'Nome de modelo inválido.');
+  const prompt = String(b.prompt ?? cur.prompt).replace(/\r\n/g, '\n').slice(0, 8000);
+  await q(`insert into game_ai (game_id, api_key, model, prompt, updated_by) values ($1, $2, $3, $4, $5)
+    on conflict (game_id) do update set api_key = excluded.api_key, model = excluded.model, prompt = excluded.prompt, updated_by = excluded.updated_by, updated_at = now()`,
+  [g.id, key.slice(0, 200), model === DEFAULT_MODEL ? '' : model, prompt.trim() === DEFAULT_PROMPT ? '' : prompt, user.id]);
+  return { has_key: !!key, key_tail: key.slice(-4) };
+});
+
+route('POST', '/api/games/:slug/ai/run', async ({ user, req, p }) => {
+  const g = await aiManager(user, p.slug);
+  const b = await readJson(req);
+  const lang = String(b.lang || '');
+  if (!(await one('select 1 from game_langs where game_id = $1 and lang = $2', [g.id, lang]))) fail(400, 'Idioma não existe neste projeto.');
+  if (aiJobs.get(g.id)?.status === 'rodando') fail(409, 'Já há uma tradução automática rodando neste jogo.');
+  const settings = await aiSettings(g.id);
+  if (!settings.api_key) fail(400, 'Salve a chave do Gemini em Configurações antes.');
+  const blockId = b.block_id ? +b.block_id : null;
+  if (blockId && !(await one('select 1 from blocks where id = $1 and game_id = $2', [blockId, g.id]))) fail(404, 'Bloco não encontrado.');
+  const limit = Math.max(0, Math.min(100000, Math.floor(+b.limit || 0)));
+  const items = await pendingStrings(g, lang, blockId, limit);
+  const job = { lang, blockId, items, status: 'rodando', total: items.length, done: 0, written: 0, rejected: 0, problems: [], error: null,
+    user, by: { login: user.login, name: user.name }, startedAt: new Date().toISOString(), finishedAt: null, abort: new AbortController() };
+  aiJobs.set(g.id, job);
+  runAiJob(g, job, { ...settings, model: settings.model || DEFAULT_MODEL });
+  return { job: jobView(job) };
+});
+
+route('POST', '/api/games/:slug/ai/stop', async ({ user, p }) => {
+  const g = await aiManager(user, p.slug);
+  aiJobs.get(g.id)?.abort.abort();
+  return { ok: true };
 });
 
 route('GET', '/api/games/:slug/team', async ({ user, p }) => {

@@ -44,6 +44,11 @@ const M = {
   'Não há tradução para copiar.': { en: 'There is no translation to copy.', es: 'No hay traducción para copiar.', ja: 'コピーする訳文がありません。' },
   'Não encontrado.': { en: 'Not found.', es: 'No encontrado.', ja: '見つかりません。' },
   'Arquivo sem a coluna "{col}". Use o TSV gerado pelo textscan.py.': { en: 'File has no "{col}" column. Use the TSV made by textscan.py.', es: 'El archivo no tiene la columna "{col}". Usa el TSV generado por textscan.py.', ja: 'ファイルに「{col}」列がありません。textscan.py が出力した TSV を使ってください。' },
+  'Só a coordenação usa a tradução automática.': { en: 'Only coordinators can use machine translation.', es: 'Solo la coordinación usa la traducción automática.', ja: '自動翻訳を使えるのはコーディネーターのみです。' },
+  'Nome de modelo inválido.': { en: 'Invalid model name.', es: 'Nombre de modelo no válido.', ja: 'モデル名が不正です。' },
+  'Já há uma tradução automática rodando neste jogo.': { en: 'A machine translation is already running for this game.', es: 'Ya hay una traducción automática en curso en este juego.', ja: 'このゲームでは既に自動翻訳が実行中です。' },
+  'Salve a chave do Gemini em Configurações antes.': { en: 'Save the Gemini key in Settings first.', es: 'Guarda primero la clave de Gemini en Configuración.', ja: '先に設定で Gemini のキーを保存してください。' },
+  'Bloco não encontrado.': { en: 'Block not found.', es: 'Bloque no encontrado.', ja: 'ブロックが見つかりません。' },
 };
 
 export const SUPPORTED = ['pt', 'en', 'es', 'ja'];

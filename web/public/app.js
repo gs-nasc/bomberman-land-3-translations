@@ -388,7 +388,74 @@ async function tabSettings(body, data) {
     h('div', { class: 'row' },
       h('a', { class: 'btn primary', href: `/api/games/${slug}/export`, download: `${game.slug}-traducoes.tsv`, text: t('set.downloadAll') }),
       h('a', { class: 'btn', href: `/api/games/${slug}/export?only=revisadas`, download: `${game.slug}-traducoes-revisadas.tsv`, text: t('set.downloadReviewed') }))));
-  body.replaceChildren(h('div', { class: 'grid' }, langs, imp, catPanel, exp));
+  body.replaceChildren(h('div', { class: 'grid' }, langs, imp, catPanel, exp, await aiPanel(data)));
+}
+
+// Machine translation (Gemini): the coordination's key, model and instructions, plus a run over the
+// empty strings of one language. Results are saved as "Gemini", unreviewed.
+// The run's HTTP answer can arrive after the live updates of a short job: never paint an older state.
+function aiNewer(prev, next) {
+  if (!prev) return true;
+  if (next.started_at !== prev.started_at) return next.started_at > prev.started_at;
+  if (prev.status !== 'rodando') return false; // a finished run does not change any more
+  return next.status !== 'rodando' || next.done >= prev.done;
+}
+function aiStatusText(job) {
+  if (!job) return '';
+  const v = { done: fmt(job.done), total: fmt(job.total), w: fmt(job.written), r: fmt(job.rejected), err: job.error || '' };
+  return t(`ai.st.${job.status}`, v);
+}
+async function aiPanel(data) {
+  const { game } = data;
+  const slug = encodeURIComponent(game.slug);
+  const cfg = await api('GET', `/api/games/${slug}/ai`);
+  const sst = h('p', { class: 'status', role: 'status' });
+  const keyInput = h('input', { type: 'password', name: 'key', autocomplete: 'off', 'aria-label': t('ai.key') });
+  const paintKey = (has, tail) => { keyInput.value = ''; keyInput.placeholder = has ? t('ai.keySaved', { tail }) : t('ai.keyPh'); };
+  paintKey(cfg.has_key, cfg.key_tail);
+  const model = h('input', { type: 'text', value: cfg.model, 'aria-label': t('ai.model'), spellcheck: 'false' });
+  const prompt = h('textarea', { rows: 9, 'aria-label': t('ai.prompt') }); prompt.value = cfg.prompt;
+  const save = async (extra = {}) => {
+    try {
+      const r = await api('PUT', `/api/games/${slug}/ai`, { api_key: keyInput.value.trim(), model: model.value.trim(), prompt: prompt.value, ...extra });
+      paintKey(r.has_key, r.key_tail); cfg.has_key = r.has_key; sst.textContent = t('ai.saved'); sst.className = 'status ok';
+    } catch (err) { sst.textContent = err.message; sst.className = 'status bad'; }
+  };
+
+  const rst = h('p', { class: 'status', role: 'status' });
+  const problems = h('ul', { class: 'small muted ai-problems' });
+  const langSel = h('select', { 'aria-label': t('ai.lang') }, data.langs.map((l) => h('option', { value: l.lang, text: `${langName(l.lang)} · ${l.lang}` })));
+  const limit = h('input', { type: 'number', min: '0', step: '10', value: '50', 'aria-label': t('ai.limit'), style: 'width:110px' });
+  const runBtn = h('button', { class: 'btn primary', type: 'button', text: t('ai.run'), onclick: async () => {
+    try { paintJob((await api('POST', `/api/games/${slug}/ai/run`, { lang: langSel.value, limit: +limit.value || 0 })).job); }
+    catch (err) { rst.textContent = err.message; rst.className = 'status bad'; }
+  } });
+  const stopBtn = h('button', { class: 'btn', type: 'button', text: t('ai.stop'), onclick: () => api('POST', `/api/games/${slug}/ai/stop`).catch((err) => toast(err.message)) });
+  let shown = null;
+  function paintJob(job) {
+    if (job && !aiNewer(shown, job)) return;
+    job = shown = job || shown;
+    const running = job?.status === 'rodando';
+    runBtn.disabled = running || !data.langs.length; stopBtn.hidden = !running;
+    rst.textContent = job ? `${job.lang.toUpperCase()} · ${aiStatusText(job)}` : ''; rst.className = `status${job?.status === 'erro' ? ' bad' : job?.status === 'concluido' ? ' ok' : ''}`;
+    problems.replaceChildren(...(job?.problems || []).map((p) => h('li', { text: p })));
+  }
+  paintJob(cfg.job);
+  useStream(game.slug, (ev) => { if (ev.type === 'ai' && rst.isConnected) paintJob(ev.job); });
+
+  return h('div', { class: 'panel' }, h('div', { class: 'panel-head' }, h('h2', { text: t('ai.title') })), h('div', { class: 'panel-body' },
+    h('p', { class: 'muted small', text: t('ai.lead') }),
+    h('label', { class: 'field' }, h('span', { text: t('ai.key') }), keyInput,
+      h('small', {}, t('ai.keyHint'), ' ', h('a', { href: 'https://aistudio.google.com/apikey', target: '_blank', rel: 'noopener', text: 'aistudio.google.com/apikey' }))),
+    h('label', { class: 'field' }, h('span', { text: t('ai.model') }), model),
+    h('label', { class: 'field' }, h('span', { text: t('ai.prompt') }), prompt, h('small', { text: t('ai.promptHint') })),
+    h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', text: t('ai.save'), onclick: () => save() }),
+      h('button', { class: 'btn ghost', type: 'button', text: t('ai.resetPrompt'), onclick: () => { prompt.value = cfg.default_prompt; model.value = cfg.default_model; } }),
+      cfg.has_key ? h('button', { class: 'btn ghost', type: 'button', text: t('ai.clearKey'), onclick: () => save({ clear_key: true }) }) : null),
+    sst,
+    h('div', { class: 'row' }, langSel, h('label', { class: 'row', style: 'gap:6px' }, h('span', { class: 'small muted', text: t('ai.limit') }), limit), runBtn, stopBtn),
+    h('p', { class: 'small muted', text: t('ai.runHint') }),
+    rst, problems));
 }
 
 // ---------------------------------------------------------------- editor
@@ -558,7 +625,20 @@ async function viewEditor(route) {
   const codesBtn = h('button', { class: 'btn sm', type: 'button', 'aria-expanded': 'false', text: t('ed.codes'), onclick: () => {
     codes.hidden = !codes.hidden; codesBtn.setAttribute('aria-expanded', codes.hidden ? 'false' : 'true');
   } });
-  workspace.append(h('div', { class: 'toolbar' }, h('h2', { class: searching ? '' : 'mono', text: title }), seg, searchBox, codesBtn), ...[summary, codes, list].filter(Boolean));
+  // coordination with a Gemini key: translate this block's empty strings in one click
+  const aiState = h('span', { class: 'small muted', role: 'status' });
+  const aiBtn = data.ai?.ready && !searching ? h('button', { class: 'btn sm', type: 'button', title: t('ai.blockHint'), text: t('ai.block'), onclick: async () => {
+    try { paintAi((await api('POST', `/api/games/${slug}/ai/run`, { lang: route.lang, block_id: currentId, limit: 0 })).job); } catch (err) { toast(err.message); }
+  } }) : null;
+  let aiShown = null;
+  const paintAi = (job) => {
+    if (!aiBtn || (job && !aiNewer(aiShown, job))) return;
+    job = aiShown = job || aiShown;
+    aiBtn.disabled = job?.status === 'rodando';
+    aiState.textContent = job && job.lang === route.lang && (job.status === 'rodando' || job.block_id === currentId) ? aiStatusText(job) : '';
+  };
+  paintAi(data.ai?.job);
+  workspace.append(h('div', { class: 'toolbar' }, h('h2', { class: searching ? '' : 'mono', text: title }), seg, searchBox, codesBtn, aiBtn, aiBtn ? aiState : null), ...[summary, codes, list].filter(Boolean));
 
   const rows = new Map();
   // Apply a change to a string and move the sidebar counters of its block by the difference
@@ -729,6 +809,7 @@ async function viewEditor(route) {
       repaintBlocks();
     }
     if (ev.type === 'progress') refreshLangProgress();
+    if (ev.type === 'ai') paintAi(ev.job);
   });
   S.cleanup.push(() => { for (const row of rows.values()) if (row.dirty && can) save(row); });
 }

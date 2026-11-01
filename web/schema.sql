@@ -138,3 +138,13 @@ create table if not exists scene_categories (
   position    int not null default 0,
   primary key (game_id, scene)
 );
+
+-- Machine translation settings per game (Settings → Gemini). The key never leaves the server.
+create table if not exists game_ai (
+  game_id     int primary key references games(id) on delete cascade,
+  api_key     text not null default '',
+  model       text not null default '',
+  prompt      text not null default '',
+  updated_by  int references users(id) on delete set null,
+  updated_at  timestamptz not null default now()
+);
