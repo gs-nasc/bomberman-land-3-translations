@@ -269,7 +269,8 @@ def find_dir_record(iso, name):
 
 
 def patch_iso(src_iso, out_iso, new_digs, log):
-    shutil.copyfile(src_iso, out_iso)
+    if os.path.abspath(src_iso) != os.path.abspath(out_iso):   # same path: patch in place
+        shutil.copyfile(src_iso, out_iso)
     with open(out_iso, 'r+b') as f:
         iso = bytearray(f.read(0x8000 + 64 * SECTOR))
         f.seek(0, 2)
@@ -329,29 +330,50 @@ def main(argv=None):
 
     ttfs = a.ttf or default_ttfs()
     log('fontes para letras novas: ' + ', '.join(ttfs))
+    tables, font_of = read_tsv(a.tsv, a.lang)
+    out_iso = os.path.join(a.out_dir, f'Bomberman Land 3 ({a.lang}).iso')
+    skipped = run(a.dig_root, a.iso_root, a.iso, tables, font_of, out_iso, ttfs, not a.no_reuse, log,
+                  dig_out=a.out_dir)
+    open(os.path.join(a.out_dir, 'encode.log'), 'w', encoding='utf-8').write('\n'.join(log_lines) + '\n')
+    return 1 if skipped else 0
 
-    lines = open(a.tsv, encoding='utf-8').read().splitlines()
+
+def read_tsv(path, lang):
+    """TSV -> ({string_res: {id: translation or None}}, {string_res: font_res})."""
+    lines = open(path, encoding='utf-8').read().splitlines()
     head = lines[0].split('\t')
     col = {k: i for i, k in enumerate(head)}
-    if a.lang not in col:
-        raise EncodeError(f"TSV has no '{a.lang}' column")
-    tables = defaultdict(dict)        # string_res -> {id: translation or None}
+    if lang not in col:
+        raise EncodeError(f"TSV has no '{lang}' column")
+    tables = defaultdict(dict)
     font_of = {}
     for line in lines[1:]:
         f = line.split('\t')
         f += [''] * (len(head) - len(f))
         sid = int(f[col['string_res']], 16)
         font_of[sid] = int(f[col['font_res']], 16)
-        tables[sid][int(f[col['id']])] = f[col[a.lang]] or None
+        tables[sid][int(f[col['id']])] = f[col[lang]] or None
+    return tables, font_of
 
-    touched_fonts = {font_of[s] for s, ids in tables.items() if any(ids.values())}
-    if not touched_fonts:
-        log(f'nada para traduzir (coluna {a.lang} vazia)')
-        return 0
+
+def touched_fonts(tables, font_of):
+    return sorted({font_of[s] for s, ids in tables.items() if any(ids.values())})
+
+
+def run(dig_root, iso_root, iso, tables, font_of, out_iso, ttfs, reuse, log, progress=None, dig_out=None):
+    """Write out_iso (and the new .DIG files to dig_out, if given); returns the string tables that
+    could not be re-inserted.
+    progress(done, total, stage) is called per font ('fontes'), per .DIG ('dig') and once for the ISO."""
+    progress = progress or (lambda *_: None)
+    fonts = touched_fonts(tables, font_of)
+    if not fonts:
+        log('nada para traduzir (coluna vazia)')
+        return []
     replacements = defaultdict(dict)  # (arc, entry) -> {sub_index: bytes}
     skipped = []
-    for fid in sorted(touched_fonts):
-        farc, fe, fk, fpath = res_path(a.dig_root, fid)
+    for n, fid in enumerate(fonts):
+        progress(n, len(fonts), 'fontes')
+        farc, fe, fk, fpath = res_path(dig_root, fid)
         glyph_bytes = open(fpath, 'rb').read()
         glyphs = parse_glyphs(glyph_bytes)
         tex_name = find_texture_in_dir(os.path.dirname(fpath), os.path.basename(fpath), glyphs)
@@ -365,7 +387,7 @@ def main(argv=None):
         tex_path = os.path.join(os.path.dirname(fpath), tex_name)
         work = []
         for sid in bound:
-            spath = res_path(a.dig_root, sid)[3]
+            spath = res_path(dig_root, sid)[3]
             originals = parse_strings(open(spath, 'rb').read())
             tokens = []
             for i in range(len(originals)):
@@ -374,7 +396,7 @@ def main(argv=None):
             work.append((originals, tokens))
         try:
             new_glyphs, new_tex, encoded = rebuild_font(glyph_bytes, open(tex_path, 'rb').read(), work,
-                                                        ttfs, not a.no_reuse, log)
+                                                        ttfs, reuse, log)
         except EncodeError as ex:
             skipped += bound
             log(f'    PULADA: {ex}')
@@ -388,13 +410,13 @@ def main(argv=None):
         replace(farc, fe, fk, fpath, new_glyphs)
         replace(farc, fe, int(tex_name[1:].split('_')[0]), tex_path, new_tex)
         for sid, strings in zip(bound, encoded):
-            sarc, se, sk, spath = res_path(a.dig_root, sid)
+            sarc, se, sk, spath = res_path(dig_root, sid)
             replace(sarc, se, sk, spath, build_string_table(strings))
 
     by_arc = defaultdict(dict)
     for (arc, e), reps in replacements.items():
-        raw = open(os.path.join(a.dig_root, arc, f'e{e:04d}.bin'), 'rb').read()
-        with open(os.path.join(a.iso_root, f'{arc}.DIG'), 'rb') as fh:
+        raw = open(os.path.join(dig_root, arc, f'e{e:04d}.bin'), 'rb').read()
+        with open(os.path.join(iso_root, f'{arc}.DIG'), 'rb') as fh:
             fh.seek(e * 16 + 8)
             n_subs, = struct.unpack('<I', fh.read(4))
         new = relayout_entry(raw, n_subs, reps)
@@ -402,17 +424,18 @@ def main(argv=None):
             log(f'  AVISO: {arc} e{e:04d} cresceu {len(raw)} -> {len(new)} bytes (memória da cena)')
         by_arc[arc][e] = new
     new_digs = {}
-    for arc, entries in by_arc.items():
+    for n, (arc, entries) in enumerate(by_arc.items()):
+        progress(n, len(by_arc), 'dig')
         log(f'{arc}.DIG:')
-        new_digs[arc] = rebuild_dig(open(os.path.join(a.iso_root, f'{arc}.DIG'), 'rb').read(), entries, log)
-        open(os.path.join(a.out_dir, f'{arc}.DIG'), 'wb').write(new_digs[arc])
-    out_iso = os.path.join(a.out_dir, f'Bomberman Land 3 ({a.lang}).iso')
+        new_digs[arc] = rebuild_dig(open(os.path.join(iso_root, f'{arc}.DIG'), 'rb').read(), entries, log)
+        if dig_out:
+            open(os.path.join(dig_out, f'{arc}.DIG'), 'wb').write(new_digs[arc])
+    progress(0, 1, 'iso')
     log('ISO:')
-    patch_iso(a.iso, out_iso, new_digs, log)
+    patch_iso(iso, out_iso, new_digs, log)
     if skipped:
         log(f'tabelas não reinseridas: {", ".join(f"{s:08x}" for s in skipped)}')
-    open(os.path.join(a.out_dir, 'encode.log'), 'w', encoding='utf-8').write('\n'.join(log_lines) + '\n')
-    return 1 if skipped else 0
+    return skipped
 
 
 if __name__ == '__main__':
