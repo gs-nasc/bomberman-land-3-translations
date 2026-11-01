@@ -4,6 +4,8 @@ Ferramentas para traduzir o **Bomberman Land 3** (PlayStation 2, Japão, SLPM-62
 O repositório tem a engenharia reversa do jogo e um pipeline completo: extrai o texto, você traduz
 numa planilha, e as ferramentas geram um ISO jogável com o texto novo, fontes com acentos incluídas.
 
+> Para só **jogar** traduzido, sem linha de comando, use o aplicativo: [desktop/README.md](desktop/README.md).
+>
 > O jogo **não** está incluído. Você precisa da sua própria cópia do disco (`.bin` + `.cue`).
 > Nunca faça commit de arquivos do jogo (`.bin`, `.iso`, `.DIG`); o `.gitignore` já bloqueia.
 
@@ -278,5 +280,7 @@ Caddy dela. Atualizar: copiar `web/` para `/opt/games` e rodar `docker compose u
 | `tools/verify.py` | confere o ISO gerado |
 | `tools/progress.py` | progresso por idioma e por cena |
 | `tools/elfdis.py`, `tools/idsearch.py`, `tools/sjisscan.py` | apoio à engenharia reversa |
+| `web/` | Glifo, o site de tradução colaborativa |
+| `desktop/` | aplicativo que gera o disco traduzido a partir da cópia do jogador ([desktop/README.md](desktop/README.md)) |
 | `teste/` | planilhas de teste e prévias das fontes geradas |
 | `NOTAS.md` | documentação técnica |

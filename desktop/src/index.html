@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Glifo</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#0b0c0e"/><rect x="7" y="9" width="12" height="3" rx="1.5" fill="#fff"/><rect x="7" y="15" width="18" height="3" rx="1.5" fill="#fff" opacity=".55"/><rect x="7" y="21" width="9" height="3" rx="1.5" fill="#3d7bff"/></svg>
+      <span>Glifo</span>
+    </div>
+    <button type="button" class="link" id="settings-btn" data-t="settings"></button>
+  </header>
+  <main id="app"></main>
+  <dialog id="settings">
+    <form method="dialog">
+      <h2 data-t="settings"></h2>
+      <label class="field"><span data-t="server"></span><input id="server-url" type="url" required></label>
+      <label class="field"><span data-t="uiLang"></span><select id="ui-lang"></select></label>
+      <div class="row end"><button class="btn" value="cancel" data-t="cancel" formnovalidate></button><button class="btn primary" value="ok" data-t="save"></button></div>
+    </form>
+  </dialog>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

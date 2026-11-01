@@ -1,0 +1,13 @@
+{
+  "name": "glifo-desktop",
+  "private": true,
+  "description": "Glifo: aplicativo que gera o disco traduzido a partir da cópia do jogador",
+  "scripts": {
+    "engine": "python engine/build.py",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.2"
+  }
+}
