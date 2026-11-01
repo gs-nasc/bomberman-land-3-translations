@@ -635,7 +635,10 @@ async function viewEditor(route) {
     if (!aiBtn || (job && !aiNewer(aiShown, job))) return;
     job = aiShown = job || aiShown;
     aiBtn.disabled = job?.status === 'rodando';
-    aiState.textContent = job && job.lang === route.lang && (job.status === 'rodando' || job.block_id === currentId) ? aiStatusText(job) : '';
+    const mine = job && job.lang === route.lang && (job.status === 'rodando' || job.block_id === currentId);
+    // while it runs, the last warning (quota, timeout...) says why it is not moving
+    const last = job?.status === 'rodando' ? job.problems?.at(-1) : '';
+    aiState.textContent = mine ? `${aiStatusText(job)}${last ? ` · ${last}` : ''}` : '';
   };
   paintAi(data.ai?.job);
   workspace.append(h('div', { class: 'toolbar' }, h('h2', { class: searching ? '' : 'mono', text: title }), seg, searchBox, codesBtn, aiBtn, aiBtn ? aiState : null), ...[summary, codes, list].filter(Boolean));

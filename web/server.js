@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { langOf, tr } from './messages.js';
 import { buildIndex, copiesOf, parseCategories, pickSuggestions, similarTo } from './sources.js';
-import { AiError, DEFAULT_MODEL, DEFAULT_PROMPT, batches, buildRequest, codeProblem, generate, parseResponse } from './ai.js';
+import { AiError, DEFAULT_MODEL, DEFAULT_PROMPT, THINKING, batches, buildRequest, codeProblem, generate, parseResponse } from './ai.js';
 
 const env = (k, d) => process.env[k] ?? d;
 const PORT = +env('PORT', 3000);
@@ -224,6 +224,8 @@ const sleep = (ms, signal) => new Promise((resolve) => { const tm = setTimeout(r
 const jobView = (j) => j && { lang: j.lang, block_id: j.blockId, status: j.status, total: j.total, done: j.done, written: j.written, rejected: j.rejected,
   problems: j.problems.slice(-10), error: j.error, by: j.by, started_at: j.startedAt, finished_at: j.finishedAt };
 const announce = (g, j) => broadcast(g.slug, { type: 'ai', job: jobView(j) });
+// every problem also goes to the server log (docker compose logs app)
+const note = (g, j, msg) => { j.problems.push(msg); console.log(`[gemini] ${g.slug} ${j.lang}: ${msg}`); };
 
 async function aiSettings(gameId) {
   return (await one('select api_key, model, prompt from game_ai where game_id = $1', [gameId])) || { api_key: '', model: '', prompt: '' };
@@ -246,7 +248,8 @@ async function pendingStrings(game, lang, blockId, limit) {
 
 async function runAiJob(game, job, settings) {
   const queue = batches(job.items);
-  let retries = 0;
+  let retries = 0, thinking = THINKING;
+  console.log(`[gemini] ${game.slug} ${job.lang}: ${job.total} strings, modelo ${settings.model}`);
   try {
     const bot = await botUser();
     const idx = await sourceIndex(game.id);
@@ -254,19 +257,25 @@ async function runAiJob(game, job, settings) {
       const batch = queue.shift();
       let answer;
       try {
-        answer = parseResponse(await generate({ key: settings.api_key, model: settings.model, body: buildRequest(settings.prompt, job.lang, batch), signal: job.abort.signal }), batch.length);
+        answer = parseResponse(await generate({ key: settings.api_key, model: settings.model, body: buildRequest(settings.prompt, job.lang, batch, thinking), signal: job.abort.signal }), batch.length);
         retries = 0;
       } catch (e) {
         if (job.abort.signal.aborted) break;
+        if (e instanceof AiError && e.thinking && thinking) {
+          note(game, job, `o modelo não aceita thinkingLevel "${thinking}"; seguindo sem ele`);
+          thinking = ''; queue.unshift(batch); continue;
+        }
         if (!(e instanceof AiError) || e.fatal) throw e;
-        job.problems.push(batch.length === 1 && !e.retryAfter ? `${batch[0].label} #${batch[0].idx}: ${e.message}` : e.message);
         if (!e.retryAfter) {
+          note(game, job, batch.length === 1 ? `${batch[0].label} #${batch[0].idx}: ${e.message}` : e.message);
           // a bad answer is retried in halves, down to the one string that the model can't handle
           if (batch.length > 1) queue.unshift(batch.slice(0, batch.length >> 1), batch.slice(batch.length >> 1));
           else { job.done++; job.rejected++; }
         } else {
           // quota or overload: wait and try the same batch again, a few times in a row at most
           if (++retries > MAX_RETRIES) throw e;
+          note(game, job, `${e.message} (tentando de novo em ${Math.ceil(e.retryAfter)} s, ${retries}/${MAX_RETRIES})`);
+          announce(game, job);
           queue.unshift(batch);
           await sleep(e.retryAfter * 1000, job.abort.signal);
         }
@@ -277,7 +286,7 @@ async function runAiJob(game, job, settings) {
         const text = answer.get(i);
         const problem = text === undefined ? 'sem resposta' : codeProblem(it.source, text);
         job.done++;
-        if (problem) { job.rejected++; job.problems.push(`${it.label} #${it.idx}: ${problem}`); continue; }
+        if (problem) { job.rejected++; note(game, job, `${it.label} #${it.idx}: ${problem}`); continue; }
         // only empty strings: a person may have translated it while the job was running
         job.written += (await writeCopies(game, bot, job.lang, [it.id, ...copiesOf(idx, it.id)], text, false)).length ? 1 : 0;
       }
@@ -287,9 +296,11 @@ async function runAiJob(game, job, settings) {
     job.status = job.abort.signal.aborted ? 'parado' : 'concluido';
   } catch (e) {
     job.status = 'erro'; job.error = e instanceof AiError ? e.message : 'Erro no servidor.';
+    console.log(`[gemini] ${game.slug} ${job.lang}: parou com erro: ${job.error}`);
     if (!(e instanceof AiError)) console.error(e);
   }
   job.finishedAt = new Date().toISOString();
+  console.log(`[gemini] ${game.slug} ${job.lang}: ${job.status}, ${job.written} salvas, ${job.rejected} descartadas`);
   announce(game, job);
   await log(game, job.user, 'ia_traducao', job.lang, { written: job.written, rejected: job.rejected, status: job.status }).catch(() => {});
 }

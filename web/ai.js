@@ -5,6 +5,10 @@ const API = (process.env.GEMINI_API_URL || 'https://generativelanguage.googleapi
 export const DEFAULT_MODEL = 'gemini-flash-latest';
 export const BATCH_STRINGS = 40;
 export const BATCH_CHARS = 5000;
+const TIMEOUT_S = +(process.env.GEMINI_TIMEOUT_S || 120);
+// Flash models "think" before answering, which is most of the wait; translation needs little of it.
+// Empty (GEMINI_THINKING=) sends no thinking setting at all.
+export const THINKING = process.env.GEMINI_THINKING ?? 'low';
 
 // Editable by the coordination (Settings). The fixed rules below always go along with it.
 export const DEFAULT_PROMPT = `Você está traduzindo os diálogos de Bomberman Land 3 (PlayStation 2), um jogo infantil e bem-humorado.
@@ -53,13 +57,14 @@ export function batches(items, maxStrings = BATCH_STRINGS, maxChars = BATCH_CHAR
   return out;
 }
 
-export function buildRequest(prompt, lang, batch) {
+export function buildRequest(prompt, lang, batch, thinking = THINKING) {
   return {
     systemInstruction: { parts: [{ text: `${RULES(languageName(lang))}\n\nInstructions from the translation team:\n${prompt || DEFAULT_PROMPT}` }] },
     contents: [{ role: 'user', parts: [{ text: JSON.stringify(batch.map((it, i) => ({ id: i + 1, text: it.source }))) }] }],
     generationConfig: {
       responseMimeType: 'application/json',
       responseSchema: { type: 'ARRAY', items: { type: 'OBJECT', properties: { id: { type: 'INTEGER' }, text: { type: 'STRING' } }, required: ['id', 'text'] } },
+      ...(thinking ? { thinkingConfig: { thinkingLevel: thinking } } : {}),
     },
   };
 }
@@ -81,24 +86,30 @@ export function parseResponse(data, size) {
 }
 
 export class AiError extends Error {
-  constructor(message, { fatal = false, retryAfter = 0 } = {}) { super(message); this.fatal = fatal; this.retryAfter = retryAfter; }
+  constructor(message, { fatal = false, retryAfter = 0, thinking = false } = {}) { super(message); this.fatal = fatal; this.retryAfter = retryAfter; this.thinking = thinking; }
 }
 
 // One generateContent call. Quota and overload errors are retryable; a bad key or model is fatal.
 export async function generate({ key, model, body, signal }) {
   let res;
+  // a request that never answers would hold the job forever: give up after TIMEOUT_S and retry
+  const timeout = AbortSignal.timeout(TIMEOUT_S * 1000);
+  let data;
   try {
     res = await fetch(`${API}/models/${encodeURIComponent(model || DEFAULT_MODEL)}:generateContent`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key }, body: JSON.stringify(body), signal,
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key }, body: JSON.stringify(body),
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     });
+    data = await res.json().catch((e) => { if (timeout.aborted || signal?.aborted) throw e; return {}; });
   } catch (e) {
     if (signal?.aborted) throw e;
-    throw new AiError(`sem conexão com o Gemini (${e.message})`, { retryAfter: 10 });
+    if (timeout.aborted) throw new AiError(`o Gemini não respondeu em ${TIMEOUT_S} s`, { retryAfter: 5 });
+    throw new AiError(`sem conexão com o Gemini (${e.cause?.code || e.message})`, { retryAfter: 10 });
   }
-  const data = await res.json().catch(() => ({}));
   if (res.ok) return data;
   const msg = data?.error?.message || `HTTP ${res.status}`;
   const delay = (data?.error?.details || []).map((d) => parseFloat(d.retryDelay)).find((n) => n > 0);
   if (res.status === 429 || res.status >= 500) throw new AiError(`Gemini ocupado ou sem cota: ${msg}`, { retryAfter: delay || 20 });
-  throw new AiError(`Gemini recusou o pedido: ${msg}`, { fatal: true });
+  // a model without thinking levels refuses the setting: the job then retries without it
+  throw new AiError(`Gemini recusou o pedido: ${msg}`, { fatal: true, thinking: res.status === 400 && /thinking/i.test(msg) });
 }

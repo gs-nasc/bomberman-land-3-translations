@@ -39,6 +39,8 @@ test('buildRequest numbers the batch from 1 and carries rules, language and team
   assert.match(sys, /Use tom infantil\./);
   assert.match(sys, /\{PAG\}/);
   assert.equal(r.generationConfig.responseMimeType, 'application/json');
+  assert.deepEqual(r.generationConfig.thinkingConfig, { thinkingLevel: 'low' });
+  assert.equal(buildRequest('', 'pt', [{ id: 1, source: 'あ' }], '').generationConfig.thinkingConfig, undefined);
   assert.equal(languageName('es'), 'Spanish');
 });
 
